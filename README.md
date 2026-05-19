@@ -136,7 +136,7 @@ cmd /c mklink /J "$env:USERPROFILE\.claude\skills\bms-diff-install" `
 
 ```bash
 # Linux / macOS
-HEADER_URL=https://potechang.github.io/like_st/header.json
+HEADER_URL=<difficulty table の header.json の URL>     # 例: https://potechang.github.io/like_st/header.json
 SONGDATA_DB=<beatoraja install>/songdata.db
 MUSIC_ROOT=<beatoraja install>/../music
 STATE_DIR=<scratch dir to keep logs and download cache>
