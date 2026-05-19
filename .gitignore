@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+*.pyo
+
+# User-specific state from running the scripts — keep this repo to just code.
+state/
+**/state/
+
+# Local OS noise
+.DS_Store
+Thumbs.db
+desktop.ini
