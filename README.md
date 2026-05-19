@@ -228,6 +228,23 @@ JS 必須 / CAPTCHA 必要なホスト（Mega、AXFC、Wix ホスト、k-bms.com
 SKILL.md に Haiku 用プロンプト雛形があり、WebFetch で解決した URL を
 `install_parents.py --overrides` 経由で戻します。
 
+### 解決の3段階フォールバック
+
+1. **Tier 1 — 決定論的アダプタ** (`install_parents.py` 内蔵)
+   上の表のホストパターンに合うやつ。即座に解決。
+2. **Tier 2 — Haiku + WebFetch サブエージェント**
+   Tier 1 が `needs_haiku` で諦めたページを HTML 取得してDL URL を抽出。
+   WebFetch で見える静的 HTML なら大抵 OK。
+3. **Tier 3 — Sonnet + playwright サブエージェント** (推奨：頑固な長尾)
+   Tier 2 でも取れなかったやつ。実体は:
+   - web.archive.org のスナップショットが空 → **Wayback CDX API** で代替スナップショット列挙
+   - MediaFire → playwright で `#downloadButton` を `waitForSelector` → `href` 抽出
+   - getuploader → 一覧ページでセッションクッキーセット → DL ボタンクリック → `download` イベント captureして直接保存
+   - Dropbox `scl/fi/?rlkey=...` で 400 → playwright で DL ボタンクリック (正しい rlkey を取得)
+   - GDrive `/drive/u/N/folders/` → `/u/N/` 切除
+   経験上 Haiku では「同 URL をそのまま返す」短絡が起きるので、この段階は
+   `model: "sonnet"` 推奨。SKILL.md の Tier 3 セクションに詳細手順。
+
 ## 既知の制約
 
 - **Haiku 判定の暴走**: タイブレークができないケースで先頭フォルダにフォール

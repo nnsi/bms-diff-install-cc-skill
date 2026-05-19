@@ -80,6 +80,8 @@ python <scripts>/install_parents.py \
   [--md5 HASH]   # only the parent of one 差分
 ```
 
+### Tier 1 — deterministic adapter chain
+
 The script resolves each URL through host adapters:
 - **Direct archive** (`.zip`/`.rar`/`.7z`/`.lzh`) → download
 - **manbow.nothing.sh/event/event.cgi** → parse `<Th>DownLoadAddress</B></th><td><a href=URL>` and recurse on that URL
@@ -94,6 +96,8 @@ The script resolves each URL through host adapters:
 - **bmssearch.net info page** → find embedded archive link
 - **Unknown / AXFC / Mega / MediaFire / Wix / OneDrive / etc.** → status `needs_haiku`
 
+### Tier 2 — Haiku + WebFetch
+
 For `needs_haiku` rows, spawn a Haiku subagent (`model: "haiku"`) with this
 template:
 
@@ -104,21 +108,92 @@ browser MCP, locate the BMS本体 download link (look for "本体"/"Body"/"Full"
 labels, the largest .zip/.rar/.7z, or the only file when there's no
 ambiguity). Avoid links labelled "差分" / "sabun" / "diff" / "BGA only".
 
-Write decisions to <state-dir>/parent_haiku_urls.json — an array of
-{parent_url, resolved_url}. The user will then rerun:
-  install_parents.py --state-dir ... --music-root ... --override <file>
-(NOTE: the --override flag is not yet implemented; for now, manually update
-the script's resolve() or just feed the new URLs back as raw direct URLs by
-editing the URL → adapter mapping.)
+Write a JSON object to <state-dir>/parent_haiku_urls.json:
+  { "<original parent_url>": "<replacement URL or null>", ... }
 ```
 
-(Future work: a `--override <jsonfile>` flag on `install_parents.py` to feed
-Haiku's resolutions back in cleanly. For now the unresolved cases are
-listed in the CSV for inspection.)
+Then re-run `install_parents.py --overrides <state-dir>/parent_haiku_urls.json`
+— the script picks up the replacement URLs and routes each through the
+existing adapter chain.
 
-Post-install, **re-run phase 2 (dry-run)** to refresh `no_parent.jsonl` /
-`ambiguous.jsonl` / `results.csv` — many of the previously-no_parent差分
-should now auto-match.
+### Tier 3 — Sonnet + playwright fallback (for the long tail)
+
+After Tier 2 (Haiku + WebFetch), what's left tends to be:
+- web.archive.org snapshots that returned a tiny HTML stub instead of the file
+- JS-rendered pages (MediaFire, Wix sites, getuploader confirmation forms)
+- Pages where the relevant link only appears after clicking a button
+- Pages with rlkey/session tokens that need a real browser context
+
+Empirically a Haiku-with-Bash subagent **does not reliably do this work** — it
+tends to return the URL it was already given without actually navigating
+anywhere. **Use Sonnet** (`model: "sonnet"`) for this tier and give it
+explicit per-case techniques in the prompt.
+
+Setup (one-time, in `<state-dir>/pw/`):
+
+```bash
+mkdir -p "<state-dir>/pw"
+cd "<state-dir>/pw"
+cat > package.json <<'EOF'
+{ "name": "bms-pw", "type": "module", "version": "0.0.1" }
+EOF
+npm install playwright
+npx playwright install chromium    # ~110MB, one-time
+```
+
+Prepare input for the agent (extract still-failing rows from
+`parent_install_log.csv`, drop the truly hopeless cases like AXFC /
+permanent 404s):
+
+```python
+# scratch helper — see history of this skill for the full version
+# Writes <state-dir>/pw/input.json with one object per case:
+# {parent_url, prev_resolved, prev_reason, hint_artist, hint_title}
+```
+
+Then spawn an Agent with `model: "sonnet"` and a prompt that lists, for
+each case, the specific technique that's likely to work. Techniques that
+have proven effective:
+
+- **Wayback CDX**: when a `web.archive.org/web/{ts}/...zip` returns a tiny
+  HTML stub, query `http://web.archive.org/cdx/search/cdx?url=<orig>&output=json&filter=statuscode:200`
+  for alternate snapshots. Pick the row with the largest `length`.
+  Construct the URL as `https://web.archive.org/web/{ts}id_/{orig}` — the
+  `id_` flag returns raw bytes, not the toolbar wrapper. HEAD-check before
+  committing.
+- **MediaFire**: navigate with playwright, `waitForSelector('#downloadButton')`,
+  read its `href` → that's the direct CDN URL.
+- **getuploader**: visit the listing page first to set a session cookie,
+  then navigate to the download URL in the same browser context, click the
+  agreement form's submit button, and capture the `download` event:
+  `await page.waitForEvent('download'); await download.saveAs(path)`.
+- **Dropbox `scl/fi/...?rlkey=...` returning 400**: navigate to the share
+  URL with `dl=0`, click the actual Download button, capture the
+  `download` event. The proper rlkey is sometimes embedded only in
+  client-side state, not in the URL you started with.
+- **GDrive `/drive/u/N/folders/{ID}`**: strip the `/u/N/` segment — the
+  pipeline's regex only matches `/drive/folders/{ID}`. Same ID, the
+  account-index prefix is just routing.
+- **Sites linking to dead `axfc.net`**: check the same page for an alternate
+  URL on a different host (some manbow entries list both); if AXFC is the
+  only option, emit `null`.
+
+The Sonnet agent should either:
+- Emit a *replacement URL* (preferred — let the pipeline's existing
+  adapters handle it), or
+- *Pre-populate the cache* by downloading the file itself into
+  `<state-dir>/parent_downloads/<sanitized_url>.bin` and emitting the
+  synthetic URL (e.g. `https://local-pw/<md5>`) as the override — the
+  pipeline will see the cache hit and skip re-download.
+
+Re-run `install_parents.py --overrides <state-dir>/parent_haiku_urls.json`
+(or `playwright_urls.json` — name doesn't matter, point at whichever) to
+let the pipeline pick those up.
+
+### Post-install, re-run phase 2 (dry-run)
+
+…to refresh `no_parent.jsonl` / `ambiguous.jsonl` / `results.csv` — many
+of the previously-no_parent差分 should now auto-match.
 
 Tools required on the machine:
 - 7-Zip at `C:\Program Files\7-Zip\7z.exe` (or equivalent for non-Windows)
