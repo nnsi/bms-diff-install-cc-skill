@@ -124,7 +124,8 @@ cmd /c mklink /J "$env:USERPROFILE\.claude\skills\bms-diff-install" `
 │   ├── install_diffs.py         本体パイプライン（スコアリング + 配置）
 │   ├── install_parents.py       親楽曲ダウンローダ
 │   ├── prepare_haiku_input.py   ambiguous.jsonl を Haiku 用にスリム化
-│   └── apply_haiku.py           Haiku の place/skip 判定を適用
+│   ├── apply_haiku.py           Haiku の place/skip 判定を適用
+│   └── report.py                未配置差分の統合レポート (md + csv) 生成
 └── README.md
 ```
 
@@ -161,12 +162,33 @@ python scripts/install_diffs.py ... --apply
 python scripts/prepare_haiku_input.py --state-dir "$STATE_DIR"
 # （Haiku が haiku_decisions.json を書く）
 python scripts/apply_haiku.py --state-dir "$STATE_DIR" --music-root "$MUSIC_ROOT"
+
+# 5. （任意）未配置差分の統合レポートを出力
+#    `unrecovered.md` (人間用、親URL単位でグループ化) と
+#    `unrecovered.csv` (機械可読) を <state-dir> に書く
+python scripts/report.py --state-dir "$STATE_DIR"
 ```
 
 Windows PowerShell でも同様（変数は `$env:` か `$VAR=`、行継続は `` ` ``）。
 
 再実行は無料：DLは `<state-dir>/downloads/`（差分）と
 `<state-dir>/parent_downloads/`（親）に md5 / URL ベースでキャッシュされる。
+
+## 失敗一覧の取得
+
+`scripts/report.py --state-dir <STATE_DIR>` を実行すると、配置できなかった
+差分を1ファイルにまとめた `unrecovered.md`（人間向け Markdown）と
+`unrecovered.csv`（機械可読）が `<STATE_DIR>` 直下に生成されます。
+
+Markdown 版は **親URL単位でグループ化**されており、同じ親に紐づく差分が
+まとめて表示されるので「この親URLを手動で取りに行けば N 個まとめて解消」
+というアクションが取りやすい形式。各差分について以下を含みます:
+
+- md5（先頭8文字）/ Lv / Title / Artist
+- カテゴリ: `no_parent`（親が未所持）/ `haiku_skip`（Haiku がスキップ判定）/ `dl_error`（DL/parse失敗）
+- 親 URL（手で取りに行くなら参照する起点）
+- 差分 URL（参考）
+- 親側のステータス（installed / needs_haiku / error / never_attempted）と理由
 
 ## 判定しきい値
 

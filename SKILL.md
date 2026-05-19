@@ -222,12 +222,19 @@ For non-GDrive errors (dead links, unexpected formats), report them and move on.
 
 ## Phase 7: report
 
-Tell the user:
+a. Generate the consolidated "not installed" list:
+```
+python <scripts>/report.py --state-dir "$STATE_DIR"
+```
+This writes `<state-dir>/unrecovered.md` (grouped by parent URL — actionable
+for the user, e.g. "if you install parent X manually, N差分 unblock") and
+`<state-dir>/unrecovered.csv` (machine-readable).
+
+b. Tell the user:
 
 - Total placed across phases 3, 4, 5
-- How many `no_parent` charts are still waiting (suggest installing the
-  parent songs and rerunning the skill to pick them up — the DL cache means
-  it'll be fast)
+- How many `no_parent` / `haiku_skip` / `dl_error` charts remain, with a
+  pointer to `unrecovered.md`
 - **They must rescan in beatoraja** — placing files doesn't update
   `songdata.db`. F5 or the "楽曲データベース更新" menu, or set
   `"updatesong": true` in `config.json` for auto-scan on startup.
