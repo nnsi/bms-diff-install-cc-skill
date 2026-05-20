@@ -24,6 +24,8 @@ manbow / venue.bmssearch の URL 正規化、Google Drive の virus-scan 確認
               │  - #WAV キーサウンド参照を抽出            │
               │  - 各楽曲フォルダの音源ファイルとマッチング│
               │  - auto / ambiguous / no_parent に分類    │
+              │  (配置後オプション: scripts/songdb で      │
+              │   songdata.db に直接INSERTしてF5不要化)   │
               └────────────┬─────────────────────────────┘
                            │
                 ┌──────────┼──────────┐
@@ -125,7 +127,17 @@ cmd /c mklink /J "$env:USERPROFILE\.claude\skills\bms-diff-install" `
 │   ├── install_parents.py       親楽曲ダウンローダ
 │   ├── prepare_haiku_input.py   ambiguous.jsonl を Haiku 用にスリム化
 │   ├── apply_haiku.py           Haiku の place/skip 判定を適用
-│   └── report.py                未配置差分の統合レポート (md + csv) 生成
+│   ├── report.py                未配置差分の統合レポート (md + csv) 生成
+│   └── songdb/                  jbms-parser互換 BMSパーサ + songdata.db書込
+│       ├── hashing.py           生バイトmd5/sha256 + SongUtils互換crc32
+│       ├── mode.py              Mode enum
+│       ├── model.py             BMSModel/TimeLine/Note dataclasses
+│       ├── parser_bms.py        BMS/BME/BML/PMS パーサ
+│       ├── parser_bmson.py      BMSON (.bmson) パーサ
+│       ├── chart_string.py      charthash (toChartString + Java double互換)
+│       ├── songdata.py          BMSModel → song テーブル行
+│       ├── writer.py            sqlite3 スキーマ + UPSERT
+│       └── __main__.py          CLI（python -m scripts.songdb）
 └── README.md
 ```
 
@@ -254,12 +266,21 @@ SKILL.md に Haiku 用プロンプト雛形があり、WebFetch で解決した 
 - **フォルダ命名**は親BMSの `#ARTIST` / `#TITLE` を使用し、差分サフィックス
   （`[Eternity]` / `(SP …)`）を末尾から除去。既存フォルダがあれば `exists`
   として上書きしません。
-- **songdata.db には触りません**。スキル実行後は beatoraja で再スキャン
-  （F5）するか、起動時自動スキャンを有効化してください。
+- **songdata.db は `scripts/songdb` でオプション更新可能** （配置後に
+  `python -m scripts.songdb --songdata-db ... --music-root ... --from-state-dir ...`
+  を叩けば差分譜面が直接 INSERT され、beatoraja の F5 不要で選曲画面に
+  出現する）。BMS/BME/BML/PMS/BMSON 全形式対応。`folder`/`parent` CRC32 は
+  同じディレクトリの既存行から継承するので、beatoraja の選曲ツリーと整合
+  する。`charthash` は計算しない (空文字列、機能影響は軽微)。明示的に
+  頼まれた場合のみ実行。これをやらない場合は beatoraja で再スキャン
+  （F5）するか、起動時自動スキャンを有効化してください。`scripts/songdb/`
+  は **clean-room 実装** (SPEC.md と公開仕様のみベース、beatoraja /
+  jbms-parser のソース未参照)、MIT ライセンス (LICENSE 同梱)。
 - **親キャッシュは direct URL ベース**。元の親URLが別の direct URL に
   解決されると（GDrive ID 変更時など）キャッシュキーが一致せず古いファイル
   が孤立します。容量を空けたいなら `parent_downloads/` は削除可。
 
 ## ライセンス
 
-個人利用想定。スクリプトは MIT 相当、好きにどうぞ。
+個人利用想定。スクリプトは MIT 相当、好きにどうぞ。`scripts/songdb/` は
+clean-room 実装で、専用 LICENSE ファイル (MIT) と provenance note を同梱。

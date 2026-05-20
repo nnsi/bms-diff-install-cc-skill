@@ -22,6 +22,8 @@ The scripts live alongside this SKILL.md:
 - `scripts/install_parents.py` — parent-song downloader (phase 3)
 - `scripts/prepare_haiku_input.py` — slims `ambiguous.jsonl` for Haiku
 - `scripts/apply_haiku.py` — applies Haiku's decisions
+- `scripts/songdb/` — jbms-parser-compatible Python BMS parser + songdata.db
+  writer; invoked as `python -m scripts.songdb` (phase 7)
 
 Refer to them with `${CLAUDE_PLUGIN_ROOT:-$HOME/.claude}/skills/bms-diff-install/scripts/<name>.py` or by absolute path on Windows. On this user's machine they're at `C:\Users\norfa\.claude\skills\bms-diff-install\scripts\`.
 
@@ -295,7 +297,43 @@ d. Rerun `install_diffs.py --apply --md5 <hash>` for each rescued entry —
 
 For non-GDrive errors (dead links, unexpected formats), report them and move on.
 
-## Phase 7: report
+## Phase 7: register placed charts into songdata.db (optional)
+
+Beatoraja normally discovers new charts via F5 / `updatesong: true`, which
+walks the entire music root and re-parses every BMS file (expensive on large
+libraries). If the user wants the just-placed差分 to appear without that
+rescan, run:
+
+```
+python -m scripts.songdb \
+  --songdata-db "$SONGDATA_DB" \
+  --music-root  "$MUSIC_ROOT" \
+  --from-state-dir "$STATE_DIR"
+```
+
+This reads `<state-dir>/results.csv`, finds the placed BMS / BME / BML /
+PMS / BMSON files in their target folders, parses each one
+(jbms-parser-compatible Python port), and INSERTs a fully-populated `song`
+row directly. **Every column** (md5, sha256, title, artist, notes, length,
+bpm, mode, feature, content, charthash, judge) is bit-exact against
+beatoraja's own scan output — verified at 100% (or 99.x% with stale rows
+from old beatoraja versions) across a 1000-row golden sample against the
+real songdata.db. BMSON support: md5 is stored as "" matching beatoraja's
+convention (beatoraja's BMSONDecoder never md5s). The `folder`/`parent`
+CRC32 columns are inherited from any existing sibling row in the same
+directory (typically the parent BMS), so they're internally consistent
+with whatever bytes the user's JVM emits for path strings — even though
+we can't always replicate that encoding from outside.
+
+Only do this if explicitly asked, or if the user has expressed pain about
+the F5 cost. Otherwise leave the songdata.db alone and just instruct
+"press F5".
+
+When invoked from the skill, run *after* Phase 4 / 5 / 6 (so all placed
+files are on disk), and only for entries marked `placed` in `results.csv`.
+Existing favorites/adddates are preserved on PK collision.
+
+## Phase 8: report
 
 a. Generate the consolidated "not installed" list:
 ```
@@ -310,9 +348,11 @@ b. Tell the user:
 - Total placed across phases 3, 4, 5
 - How many `no_parent` / `haiku_skip` / `dl_error` charts remain, with a
   pointer to `unrecovered.md`
-- **They must rescan in beatoraja** — placing files doesn't update
-  `songdata.db`. F5 or the "楽曲データベース更新" menu, or set
-  `"updatesong": true` in `config.json` for auto-scan on startup.
+- If you ran phase 7 (`scripts/songdb`), the placed charts are already
+  registered in `songdata.db` — they show up in the selector on next launch
+  with no F5 needed. Otherwise, **they must rescan in beatoraja**: F5 or
+  the "楽曲データベース更新" menu, or set `"updatesong": true` in
+  `config.json` for auto-scan on startup.
 - If they registered the table URL in beatoraja's difficulty-table list,
   the newly placed差分 will all show up there after the rescan.
 
