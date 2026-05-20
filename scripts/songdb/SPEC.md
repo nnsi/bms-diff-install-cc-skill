@@ -417,8 +417,11 @@ python -m scripts.songdb \
 ```
 
 The `--from-state-dir` mode reads `<dir>/results.csv` (output of the
-parent `install_diffs.py`), finds each row's `placed` basename under
-`<music-root>/<top_folder>/`, and upserts.
+parent `install_diffs.py`). Each row's `placed` column is a
+**semicolon-separated** list of basenames (because one差分 archive can
+ship multiple `.bms` files for different difficulties). Split on `;`,
+strip whitespace, and join with `<music-root>/<top_folder>/<basename>`
+for each piece. Then upsert.
 
 ## Module layout (suggested)
 

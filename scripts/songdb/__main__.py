@@ -44,9 +44,10 @@ def _parse_one(path: str) -> 'songdata.SongRow':
 def _enumerate_from_state(state_dir: str, music_root: str) -> List[str]:
     """Read state-dir/results.csv from the parent install_diffs run.
 
-    Each row has columns including ``placed`` (basename of the dropped
-    chart) and ``top_folder`` (the chosen parent's folder name under
-    ``music_root``). Build the full path and return.
+    Each row has columns including ``placed`` (basenames of the dropped
+    chart files, semicolon-separated when one differential archive
+    contains multiple files) and ``top_folder`` (the chosen parent's
+    folder name under ``music_root``). Build the full paths and return.
     """
     csv_path = os.path.join(state_dir, 'results.csv')
     out: List[str] = []
@@ -60,9 +61,13 @@ def _enumerate_from_state(state_dir: str, music_root: str) -> List[str]:
             top = (r.get('top_folder') or '').strip()
             if not placed or not top:
                 continue
-            full = os.path.join(music_root, top, placed)
-            if os.path.exists(full):
-                out.append(full)
+            for name in placed.split(';'):
+                name = name.strip()
+                if not name:
+                    continue
+                full = os.path.join(music_root, top, name)
+                if os.path.exists(full):
+                    out.append(full)
     return out
 
 
