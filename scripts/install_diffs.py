@@ -23,7 +23,7 @@ Output state files:
 """
 
 import argparse, csv, io, json, os, re, sqlite3, sys, time, traceback, zipfile
-import urllib.request, urllib.error
+import urllib.request, urllib.error, urllib.parse
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from collections import Counter
 from threading import Lock
@@ -205,7 +205,7 @@ def load_table(header_url, state_dir):
         with open(header_path, 'wb') as f: f.write(data)
     with open(header_path, 'r', encoding='utf-8') as f:
         header = json.load(f)
-    data_url = header['data_url']
+    data_url = urllib.parse.urljoin(header_url, header['data_url'])
     if not os.path.exists(data_path):
         data, _ = fetch(data_url)
         with open(data_path, 'wb') as f: f.write(data)
