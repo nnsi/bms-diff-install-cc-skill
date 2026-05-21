@@ -104,7 +104,11 @@ def ensure_schema(con: sqlite3.Connection) -> None:
 
 def _connect(db_path: str) -> sqlite3.Connection:
     con = sqlite3.connect(db_path)
-    con.text_factory = bytes  # paths can hold non-utf8 bytes; we manage strings.
+    # Default text_factory=str. beatoraja inserts TEXT-affinity values for
+    # text columns; if we bind bytes here SQLite stores them with BLOB
+    # affinity and the runtime's `WHERE md5 = 'hex'` lookups silently miss
+    # them — making the chart appear as "not owned" in the selector even
+    # though our row is present.
     return con
 
 
@@ -119,11 +123,16 @@ def open_db(db_path: str) -> sqlite3.Connection:
 
 
 def _lookup_existing(con: sqlite3.Connection, md5: str, sha256: str):
-    """Return (favorite, adddate) of an existing PK row, or None."""
+    """Return (favorite, adddate) of an existing PK row, or None.
+
+    Pre-existing rows in the DB store md5 / sha256 with TEXT affinity
+    (string parameter), so we bind str — not bytes — to ensure SQLite
+    compares values of compatible affinity.
+    """
     cur = con.cursor()
     cur.execute(
         "SELECT favorite, adddate FROM song WHERE md5=? AND sha256=?",
-        (md5.encode('ascii'), sha256.encode('ascii')),
+        (md5, sha256),
     )
     r = cur.fetchone()
     if not r:
@@ -136,11 +145,7 @@ def _lookup_existing(con: sqlite3.Connection, md5: str, sha256: str):
 def _lookup_sibling(con: sqlite3.Connection, directory: str):
     """Return (folder, parent) CRC pair from any sibling row, or None."""
     cur = con.cursor()
-    # Beatoraja stores `path` as UTF-8 — confirmed by DB inspection.
-    try:
-        pat = (directory + os.sep + '%').encode('utf-8')
-    except UnicodeEncodeError:
-        return None
+    pat = directory + os.sep + '%'
     cur.execute(
         "SELECT folder, parent FROM song WHERE path LIKE ? LIMIT 1",
         (pat,),
@@ -148,30 +153,22 @@ def _lookup_sibling(con: sqlite3.Connection, directory: str):
     r = cur.fetchone()
     if not (r and r[0]):
         return None
-    try:
-        f = r[0].decode('ascii') if isinstance(r[0], bytes) else str(r[0])
-        p = (r[1].decode('ascii') if isinstance(r[1], (bytes, bytearray))
-             else (str(r[1]) if r[1] else ''))
-    except UnicodeDecodeError:
-        return None
+    f = r[0].decode('ascii') if isinstance(r[0], (bytes, bytearray)) else str(r[0])
+    p = (r[1].decode('ascii') if isinstance(r[1], (bytes, bytearray))
+         else (str(r[1]) if r[1] else ''))
     return f, p
 
 
-def _row_to_bytes(row: SongRow):
+def _row_values(row: SongRow):
     """Serialize a SongRow tuple for sqlite3 binding.
 
-    Beatoraja stores all text columns (including ``path``) as UTF-8
-    bytes — verified by inspecting the live DB. Numeric columns pass
-    through as ints.
+    Pass strings AS strings so SQLite assigns TEXT affinity, matching
+    how the runtime writes its own rows. Numeric columns pass through
+    as ints. (An earlier revision encoded everything to bytes, which
+    made SQLite store the columns as BLOB and the runtime's
+    text-affinity SELECTs miss our rows entirely.)
     """
-    out = []
-    for col in COLUMN_ORDER:
-        v = getattr(row, col)
-        if isinstance(v, str):
-            out.append(v.encode('utf-8', errors='replace'))
-        else:
-            out.append(v)
-    return tuple(out)
+    return tuple(getattr(row, col) for col in COLUMN_ORDER)
 
 
 def upsert(con: sqlite3.Connection, row: SongRow) -> None:
@@ -202,7 +199,7 @@ def upsert(con: sqlite3.Connection, row: SongRow) -> None:
     cur = con.cursor()
     cur.execute(
         f"INSERT OR REPLACE INTO song({cols}) VALUES({placeholders})",
-        _row_to_bytes(row),
+        _row_values(row),
     )
 
 

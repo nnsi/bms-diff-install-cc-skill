@@ -368,6 +368,17 @@ disagrees.
 `INSERT OR REPLACE INTO song(...) VALUES(?, ?, ..., ?)` with composite
 PK `(md5, sha256)`.
 
+**Storage-affinity trap (verified empirically)**: SQLite's type
+affinity for TEXT columns is determined per-value by the Python type
+you bind. The runtime reads back rows with `WHERE md5 = 'hex-string'`
+(TEXT-affinity comparison), so if you bind ``bytes`` for the text
+columns SQLite stores them as BLOB and the runtime's SELECT silently
+misses them (the runtime treats the chart as "not installed" and
+greys it out in the selector). Pass Python ``str`` for every TEXT
+column (md5, sha256, title, path, ...) so SQLite assigns TEXT
+affinity. Pass Python ``int`` for INTEGER columns. Do **not** call
+``str.encode()`` before binding.
+
 Preserve `favorite` and `adddate` on PK collision:
 ```sql
 SELECT favorite, adddate FROM song WHERE md5=? AND sha256=?
