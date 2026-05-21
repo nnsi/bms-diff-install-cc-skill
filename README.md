@@ -57,9 +57,11 @@ manbow / venue.bmssearch の URL 正規化、Google Drive の virus-scan 確認
                 ▼
   install_diffs.py --apply
   （親フォルダに譜面ファイルをコピー。既存ファイルは上書きしない）
+                ▼
+  python -m scripts.songdb --from-state-dir ...
+  （配置済み譜面を songdata.db に直接INSERT、F5不要で
+    次回 beatoraja 起動時に選曲画面に出現する）
 ```
-
-最後にユーザーが beatoraja で再スキャン（F5）。
 
 ## インストール
 
@@ -266,16 +268,15 @@ SKILL.md に Haiku 用プロンプト雛形があり、WebFetch で解決した 
 - **フォルダ命名**は親BMSの `#ARTIST` / `#TITLE` を使用し、差分サフィックス
   （`[Eternity]` / `(SP …)`）を末尾から除去。既存フォルダがあれば `exists`
   として上書きしません。
-- **songdata.db は `scripts/songdb` でオプション更新可能** （配置後に
+- **songdata.db は `scripts/songdb` で自動更新される**。配置直後に
   `python -m scripts.songdb --songdata-db ... --music-root ... --from-state-dir ...`
-  を叩けば差分譜面が直接 INSERT され、beatoraja の F5 不要で選曲画面に
-  出現する）。BMS/BME/BML/PMS/BMSON 全形式対応。`folder`/`parent` CRC32 は
-  同じディレクトリの既存行から継承するので、beatoraja の選曲ツリーと整合
-  する。`charthash` は計算しない (空文字列、機能影響は軽微)。明示的に
-  頼まれた場合のみ実行。これをやらない場合は beatoraja で再スキャン
-  （F5）するか、起動時自動スキャンを有効化してください。`scripts/songdb/`
-  は **clean-room 実装** (SPEC.md と公開仕様のみベース、beatoraja /
-  jbms-parser のソース未参照)、MIT ライセンス (LICENSE 同梱)。
+  を叩くと、差分譜面が直接 INSERT され **次回 beatoraja 起動時に
+  選曲画面に即座に出現** する (F5 / 再スキャン不要)。BMS/BME/BML/PMS/BMSON
+  全形式対応。`folder`/`parent` CRC32 は同じディレクトリの既存行から
+  継承するので beatoraja の選曲ツリーと整合する。`charthash` は空文字
+  (beatoraja 内部の重複検出に使われるが選曲には影響しない)。
+  `scripts/songdb/` は **clean-room 実装** (SPEC.md と公開仕様のみベース、
+  beatoraja / jbms-parser のソース未参照)、MIT ライセンス (LICENSE 同梱)。
 - **親キャッシュは direct URL ベース**。元の親URLが別の direct URL に
   解決されると（GDrive ID 変更時など）キャッシュキーが一致せず古いファイル
   が孤立します。容量を空けたいなら `parent_downloads/` は削除可。
