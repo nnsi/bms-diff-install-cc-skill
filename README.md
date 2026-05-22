@@ -63,6 +63,37 @@ manbow / venue.bmssearch の URL 正規化、Google Drive の virus-scan 確認
     次回 beatoraja 起動時に選曲画面に出現する）
 ```
 
+## クイックスタート: GUI exe (Windows)
+
+CLI を触らず「1ボタンで全部やる」だけしたい人向け。
+
+1. [Releases](https://github.com/nnsi/bms-diff-install-cc-skill/releases) から
+   `bms-diff-install.exe` を落とす（tag push 時に GitHub Actions が固める）
+2. ダブルクリックで GUI 起動
+3. 4項目を入れて「実行」を押す:
+   - 難易度表 `header.json` URL
+   - beatoraja の `songdata.db` パス
+   - 楽曲フォルダ (music root) パス
+   - 作業ディレクトリ (state dir) — どこでもよい空フォルダ
+4. dry-run → 親DL → 差分配置 → `songdata.db` 更新 → 未配置リスト出力 を一気通貫で実行
+5. 完了したら「unrecovered.md を開く」で未配置リストが見える
+
+設定は `%USERPROFILE%\.bms-diff-install-gui.ini` に保存され、次回起動時に復元。
+
+**exe 版の制約**:
+
+- **`.rar` / `.7z` / `.lzh` 親アーカイブを展開するには 7-Zip CLI が別途必要**
+  （公式インストーラを入れれば `C:\Program Files\7-Zip\7z.exe` が自動検出される）。
+  `.zip` のみで済むケースなら不要。
+- **ambiguous ケース（複数候補フォルダがあって自動判定できない差分）の
+  Haiku 経由配置は exe では走らない**（Claude Code 環境前提のため）。それらは
+  `unrecovered.md` に保留として列挙されるので、必要なら別途 Claude Code で
+  `/bms-diff-install` スキルを使うか手動で配置する。
+- Windows のみ。mac/linux は CLI を直叩きしてください。
+
+ソースから自分でビルドしたい場合は `pip install pyinstaller` してから
+`pyinstaller bms-diff-install.spec` で `dist\bms-diff-install.exe` が出ます。
+
 ## インストール
 
 ### 前提
@@ -124,7 +155,10 @@ cmd /c mklink /J "$env:USERPROFILE\.claude\skills\bms-diff-install" `
 ```
 .
 ├── SKILL.md         Claude Code スキル本体（/bms-diff-install で起動）
+├── bms-diff-install.spec        PyInstaller spec（GUI exe ビルド用）
+├── .github/workflows/build-windows.yml  Windows exe を CI で固める
 ├── scripts/
+│   ├── run_gui.py               tkinter GUI ランナー（exe 化のエントリポイント）
 │   ├── install_diffs.py         本体パイプライン（スコアリング + 配置）
 │   ├── install_parents.py       親楽曲ダウンローダ
 │   ├── prepare_haiku_input.py   ambiguous.jsonl を Haiku 用にスリム化

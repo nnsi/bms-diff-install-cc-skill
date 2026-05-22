@@ -31,18 +31,29 @@ def load_csv(path):
         return list(csv.DictReader(f))
 
 
-def main():
+def _reconfigure_utf8():
+    out = sys.stdout
+    if out is None or not hasattr(out, 'reconfigure'):
+        return
+    try:
+        out.reconfigure(encoding='utf-8')
+    except Exception:
+        pass
+
+
+def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument('--state-dir', required=True)
     p.add_argument('--format', choices=['md','csv','both'], default='both')
-    args = p.parse_args()
-    sys.stdout.reconfigure(encoding='utf-8')
+    args = p.parse_args(argv)
+    _reconfigure_utf8()
 
     s = args.state_dir
     table_path = os.path.join(s, 'data.json')
     if not os.path.exists(table_path):
-        sys.exit(f'data.json missing at {table_path}; run install_diffs.py first.')
+        print(f'data.json missing at {table_path}; run install_diffs.py first.', file=sys.stderr)
+        return 1
     with open(table_path, 'r', encoding='utf-8') as f:
         table = {e['md5']: e for e in json.load(f)}
 
@@ -180,7 +191,8 @@ def main():
                 f.write('\n')
 
         print(f'wrote {out}')
+    return 0
 
 
 if __name__ == '__main__':
-    main()
+    sys.exit(main())

@@ -330,7 +330,19 @@ def worker(ent, idx, dry_run, state, dl_cache):
                   err=f'{type(e).__name__}: {e}\n{traceback.format_exc()}')
 
 
-def main():
+def _reconfigure_utf8():
+    """Best-effort: reconfigure stdout to UTF-8. Safe under PyInstaller --noconsole
+    (where sys.stdout may be None or a wrapped stream without reconfigure())."""
+    out = sys.stdout
+    if out is None or not hasattr(out, 'reconfigure'):
+        return
+    try:
+        out.reconfigure(encoding='utf-8')
+    except Exception:
+        pass
+
+
+def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument('--header-url', required=True,
@@ -346,9 +358,9 @@ def main():
     p.add_argument('--limit', type=int)
     p.add_argument('--md5')
     p.add_argument('--level')
-    args = p.parse_args()
+    args = p.parse_args(argv)
 
-    sys.stdout.reconfigure(encoding='utf-8')
+    _reconfigure_utf8()
 
     state_dir = args.state_dir
     dl_cache = os.path.join(state_dir, 'downloads')
@@ -379,7 +391,7 @@ def main():
     if args.limit: todo = todo[:args.limit]
     print(f'  to process: {len(todo)}')
     if not todo:
-        print('Nothing to do.'); return
+        print('Nothing to do.'); return 0
 
     print('Building audio index…')
     t0 = time.time()
@@ -409,7 +421,8 @@ def main():
     for label, path in [('results', state.results_path), ('ambiguous (for Haiku)', state.ambig_path),
                         ('no_parent', state.no_parent_path), ('errors', state.err_path)]:
         print(f'  {label}: {path}')
+    return 0
 
 
 if __name__ == '__main__':
-    main()
+    sys.exit(main())

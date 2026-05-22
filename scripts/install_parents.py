@@ -491,7 +491,17 @@ def process_parent(parent_url, hint_artist, hint_title, music_root, dl_cache,
     return out
 
 
-def main():
+def _reconfigure_utf8():
+    out = sys.stdout
+    if out is None or not hasattr(out, 'reconfigure'):
+        return
+    try:
+        out.reconfigure(encoding='utf-8')
+    except Exception:
+        pass
+
+
+def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument('--state-dir', required=True)
@@ -502,9 +512,9 @@ def main():
     p.add_argument('--host', help='Only process URLs from this hostname')
     p.add_argument('--md5', help='Only process the parent of this差分 md5')
     p.add_argument('--overrides', help='JSON file mapping original parent URL to a replacement direct URL (output of a Haiku resolution pass)')
-    args = p.parse_args()
+    args = p.parse_args(argv)
 
-    sys.stdout.reconfigure(encoding='utf-8')
+    _reconfigure_utf8()
 
     state_dir = args.state_dir
     dl_cache = os.path.join(state_dir, 'parent_downloads')
@@ -513,9 +523,11 @@ def main():
     no_parent_path = os.path.join(state_dir, 'no_parent.jsonl')
     data_path = os.path.join(state_dir, 'data.json')
     if not os.path.exists(no_parent_path):
-        sys.exit(f'no_parent.jsonl missing at {no_parent_path}; run install_diffs.py first.')
+        print(f'no_parent.jsonl missing at {no_parent_path}; run install_diffs.py first.', file=sys.stderr)
+        return 1
     if not os.path.exists(data_path):
-        sys.exit(f'data.json missing at {data_path}; run install_diffs.py first.')
+        print(f'data.json missing at {data_path}; run install_diffs.py first.', file=sys.stderr)
+        return 1
 
     with open(data_path, 'r', encoding='utf-8') as f:
         table_by_md5 = {e['md5']: e for e in json.load(f)}
@@ -553,7 +565,7 @@ def main():
 
     print(f'unique parent URLs to attempt: {len(targets)}')
     if not targets:
-        print('nothing to do'); return
+        print('nothing to do'); return 0
 
     log_path = os.path.join(state_dir, 'parent_install_log.csv')
     lock = Lock()
@@ -598,7 +610,8 @@ def main():
     print(f'log: {log_path}')
     print(f'archives cached in: {dl_cache}')
     print('\nNext: rerun install_diffs.py --apply to place差分 against the newly installed parents.')
+    return 0
 
 
 if __name__ == '__main__':
-    main()
+    sys.exit(main())
