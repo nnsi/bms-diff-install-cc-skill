@@ -115,7 +115,7 @@ def main(argv=None):
             'level': ent.get('level','') or '',
             'title': e.get('title','') or ent.get('title',''),
             'artist': ent.get('artist','') or '',
-            'category': 'dl_error',
+            'category': e.get('decision') or 'dl_error',
             'reason': (e.get('error','') or '')[:120],
             'parent_url': ent.get('url',''),
             'url_diff': e.get('url_diff') or ent.get('url_diff',''),

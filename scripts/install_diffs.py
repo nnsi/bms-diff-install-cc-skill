@@ -159,6 +159,15 @@ def decide(ranked, total):
     return ('no_parent', top_folder, top_hits, f'ratio={top_ratio:.2f} gap={gap:.2f}')
 
 
+def looks_like_html(blob):
+    """Detect HTML/markup responses returned when url_diff points at a landing
+    page rather than a direct archive. BMS charts start with '#' or ';',
+    archives start with binary magic bytes — anything starting with '<' is
+    markup of some kind."""
+    head = blob[:512].lstrip()
+    return head.startswith(b'<')
+
+
 def extract_chart_blobs(blob):
     out = []
     if blob[:2] == b'PK':
@@ -258,10 +267,11 @@ class State:
                     'url_diff': ent.get('url_diff'),
                 }, ensure_ascii=False)+'\n')
                 self.np_f.flush()
-            elif decision == 'error':
+            elif decision in ('error', 'needs_resolution'):
                 self.err_f.write(json.dumps({
                     'md5': ent['md5'], 'title': ent.get('title'),
                     'url_diff': ent.get('url_diff'), 'error': err,
+                    'decision': decision,
                 }, ensure_ascii=False)+'\n')
                 self.err_f.flush()
 
@@ -272,12 +282,21 @@ def worker(ent, idx, dry_run, state, dl_cache):
         if not url:
             state.log(ent, 'no_url_diff', None, 0, 0, 'no url_diff in table')
             return
+        if not (url.startswith('http://') or url.startswith('https://')):
+            state.log(ent, 'bundled_in_parent', None, 0, 0,
+                      f'url_diff is a marker, not a URL: {url!r}')
+            return
         cache_path = os.path.join(dl_cache, ent['md5'] + '.bin')
         if os.path.exists(cache_path) and os.path.getsize(cache_path) > 256:
             with open(cache_path,'rb') as f: blob = f.read()
         else:
             blob, _ = fetch(url)
             with open(cache_path,'wb') as f: f.write(blob)
+        if looks_like_html(blob):
+            state.log(ent, 'needs_resolution', None, 0, 0,
+                      'HTML response (url_diff points at a landing page)',
+                      err=f'HTML page returned; url_diff is not a direct archive link: {url}')
+            return
         files = extract_chart_blobs(blob)
         if not files:
             state.log(ent, 'error', None, 0, 0, 'no chart files in download',
