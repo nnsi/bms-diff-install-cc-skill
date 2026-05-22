@@ -21,11 +21,15 @@ import sys
 import threading
 import time
 import traceback
+import webbrowser
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
 from scripts import install_diffs, install_parents, report
 from scripts.songdb import __main__ as songdb_cli
+
+
+SEVEN_ZIP_URL = 'https://www.7-zip.org/'
 
 
 CONFIG_PATH = os.path.join(
@@ -281,7 +285,33 @@ class App:
             subprocess.Popen(['xdg-open', path])
 
 
+def _ensure_7z() -> None:
+    """Hard-fail at startup if 7-Zip CLI is not available.
+
+    Parent BMS archives are commonly .rar / .7z / .lzh — none of which Python's
+    stdlib can extract. We re-use install_parents._resolve_7z() (which checks
+    PATH, the BMS_DIFF_7Z env var, and standard Windows install paths)."""
+    if install_parents._resolve_7z():
+        return
+    root = tk.Tk()
+    root.withdraw()
+    msg = (
+        '7-Zip CLI が見つかりません。\n\n'
+        '本ツールは親アーカイブ (.rar / .7z / .lzh) の展開に 7-Zip CLI を必要とします。\n\n'
+        '今すぐ 7-Zip のダウンロードページを開きますか?\n'
+        '(インストール後、本アプリを再起動してください)'
+    )
+    if messagebox.askyesno('7-Zip が必要です', msg):
+        try:
+            webbrowser.open(SEVEN_ZIP_URL)
+        except Exception:
+            pass
+    root.destroy()
+    sys.exit(1)
+
+
 def main() -> int:
+    _ensure_7z()
     root = tk.Tk()
     App(root)
     root.mainloop()
