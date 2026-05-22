@@ -48,3 +48,20 @@ jobs:
         with:
           files: dist/bms-diff-install.exe
           generate_release_notes: true
+          body: |
+            ## 使い方
+
+            1. 下の **Assets** から `bms-diff-install.exe` を DL
+            2. ダブルクリックで起動
+            3. 4項目を入力して「実行」を押す:
+               - 難易度表 `header.json` URL
+               - beatoraja の `songdata.db` パス
+               - 楽曲フォルダ (music root) パス
+               - 作業ディレクトリ (state dir、空フォルダどこでも)
+            4. dry-run → 親DL → 差分配置 → `songdata.db` 更新 → 未配置リスト出力 を一気通貫
+
+            **前提**: 親アーカイブ展開には [7-Zip](https://www.7-zip.org/) が別途必要 (.zip のみで済むなら不要)。
+
+            詳細・制約は [README](https://github.com/nnsi/bms-diff-install-cc-skill#クイックスタート-gui-exe-windows) 参照。
+
+            ---
