@@ -3,6 +3,10 @@ Install BMS differential charts from a beatoraja-compatible difficulty table.
 
 Pipeline per entry:
   1. Skip if md5 already in songdata.db.
+  1b. If the entry has no usable url_diff, the差分 ships inside the parent
+     package instead of as its own download. Record it as 'bundled_in_parent'
+     in no_parent.jsonl so install_parents.py fetches the package (which
+     carries the chart) — do NOT drop it silently.
   2. Download url_diff (GDrive /file/d/{ID}/ URLs are auto-normalized; folder
      URLs need manual handling — they get logged as errors).
   3. Extract chart files (.bms/.bme/.bml/.pms/.bmson) and BGA assets from the
@@ -258,13 +262,14 @@ class State:
             if decision == 'ambiguous' and ambig_info is not None:
                 self.ambig_f.write(json.dumps(ambig_info, ensure_ascii=False)+'\n')
                 self.ambig_f.flush()
-            elif decision == 'no_parent':
+            elif decision in ('no_parent', 'bundled_in_parent'):
                 self.np_f.write(json.dumps({
                     'md5': ent['md5'], 'level': ent.get('level'),
                     'title': ent.get('title'), 'artist': ent.get('artist'),
                     'top_hits': hits, 'total_wavs': total,
                     'top_folder': os.path.basename(folder) if folder else None,
                     'url_diff': ent.get('url_diff'),
+                    'category': decision,
                 }, ensure_ascii=False)+'\n')
                 self.np_f.flush()
             elif decision in ('error', 'needs_resolution'):
@@ -278,13 +283,14 @@ class State:
 
 def worker(ent, idx, dry_run, state, dl_cache):
     try:
-        url = ent.get('url_diff')
-        if not url:
-            state.log(ent, 'no_url_diff', None, 0, 0, 'no url_diff in table')
-            return
-        if not (url.startswith('http://') or url.startswith('https://')):
-            state.log(ent, 'bundled_in_parent', None, 0, 0,
-                      f'url_diff is a marker, not a URL: {url!r}')
+        url = (ent.get('url_diff') or '').strip()
+        if not url or not (url.startswith('http://') or url.startswith('https://')):
+            # No separate差分 download exists: the chart ships inside the parent
+            # package at ent['url']. Route it to no_parent.jsonl so that
+            # install_parents.py fetches that package — it carries the chart.
+            note = ('no url_diff; 差分 ships inside the parent package'
+                    if not url else f'url_diff is a marker, not a URL: {url!r}')
+            state.log(ent, 'bundled_in_parent', None, 0, 0, note)
             return
         cache_path = os.path.join(dl_cache, ent['md5'] + '.bin')
         if os.path.exists(cache_path) and os.path.getsize(cache_path) > 256:
@@ -403,19 +409,29 @@ def main(argv=None):
     for ent in rows:
         if not ent.get('md5'): continue
         if ent['md5'] in installed: continue
-        if not ent.get('url_diff'): continue
         if args.md5 and ent['md5'] != args.md5: continue
         if args.level is not None and str(ent.get('level')) != str(args.level): continue
         todo.append(ent)
     if args.limit: todo = todo[:args.limit]
-    print(f'  to process: {len(todo)}')
+    n_bundled = sum(1 for e in todo
+                    if not (e.get('url_diff') or '').strip()
+                    .startswith(('http://', 'https://')))
+    print(f'  to process: {len(todo)}'
+          + (f'  ({n_bundled} bundled in parent package)' if n_bundled else ''))
     if not todo:
         print('Nothing to do.'); return 0
 
-    print('Building audio index…')
-    t0 = time.time()
-    idx = build_audio_index(args.music_root)
-    print(f'  {len(idx)} folders indexed in {time.time()-t0:.1f}s')
+    if n_bundled == len(todo):
+        # Bundled entries return before they ever touch the index — skip the
+        # multi-minute walk of the music root.
+        print('All pending entries are bundled in their parent package; '
+              'skipping audio index.')
+        idx = {}
+    else:
+        print('Building audio index…')
+        t0 = time.time()
+        idx = build_audio_index(args.music_root)
+        print(f'  {len(idx)} folders indexed in {time.time()-t0:.1f}s')
 
     state = State(state_dir)
     t1 = time.time()
@@ -432,6 +448,7 @@ def main(argv=None):
                 print(f'  [{completed}/{len(futs)}] '
                       f'auto={auto_n} ambiguous={state.counts["ambiguous"]} '
                       f'no_parent={state.counts["no_parent"]} '
+                      f'bundled={state.counts["bundled_in_parent"]} '
                       f'error={state.counts["error"]} '
                       f'elapsed={elapsed:.0f}s eta={eta:.0f}s')
     state.close()

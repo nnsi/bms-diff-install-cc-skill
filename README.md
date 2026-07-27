@@ -23,7 +23,8 @@ manbow / venue.bmssearch の URL 正規化、Google Drive の virus-scan 確認
               │  - url_diff を DL（GDrive 自動正規化）    │
               │  - #WAV キーサウンド参照を抽出            │
               │  - 各楽曲フォルダの音源ファイルとマッチング│
-              │  - auto / ambiguous / no_parent に分類    │
+              │  - auto / ambiguous / no_parent /         │
+              │    bundled_in_parent に分類               │
               │  (配置後オプション: scripts/songdb で      │
               │   songdata.db に直接INSERTしてF5不要化)   │
               └────────────┬─────────────────────────────┘
@@ -233,7 +234,9 @@ Markdown 版は **親URL単位でグループ化**されており、同じ親に
 というアクションが取りやすい形式。各差分について以下を含みます:
 
 - md5（先頭8文字）/ Lv / Title / Artist
-- カテゴリ: `no_parent`（親が未所持）/ `haiku_skip`（Haiku がスキップ判定）/ `dl_error`（DL/parse失敗）
+- カテゴリ: `no_parent`（親が未所持）/ `bundled_in_parent`（表に使える `url_diff`
+  が無く、差分が親パッケージ同梱。`install_parents.py` でしか入らない）/
+  `haiku_skip`（Haiku がスキップ判定）/ `dl_error`（DL/parse失敗）
 - 親 URL（手で取りに行くなら参照する起点）
 - 差分 URL（参考）
 - 親側のステータス（installed / needs_haiku / error / never_attempted）と理由

@@ -86,7 +86,7 @@ def main(argv=None):
             'level': np.get('level') or ent.get('level','') or '',
             'title': np.get('title') or ent.get('title',''),
             'artist': np.get('artist') or ent.get('artist','') or '',
-            'category': 'no_parent',
+            'category': np.get('category') or 'no_parent',
             'reason': f'parent: {reason}',
             'parent_url': parent_url,
             'url_diff': np.get('url_diff') or ent.get('url_diff','') or '',

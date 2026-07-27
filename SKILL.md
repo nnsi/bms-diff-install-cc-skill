@@ -10,8 +10,8 @@ You are guiding the user through installing BMS差分 (chart-only files that ref
 ## Phases
 
 1. **Gather parameters** — confirm table URL and local paths
-2. **Dry-run** — score every entry, partition into auto / ambiguous / no_parent / error
-3. **(Optional) Install parents** — for `no_parent` charts, download the parent songs from their `url` field. Triggered when the user says "install parents too" / "親もDL" / "include parents" / "`--install-parents`". After installing parents, loop back to phase 2 (the previously-skipped差分 now have matchable parents).
+2. **Dry-run** — score every entry, partition into auto / ambiguous / no_parent / bundled_in_parent / error
+3. **(Optional) Install parents** — for `no_parent` charts, download the parent songs from their `url` field. Triggered when the user says "install parents too" / "親もDL" / "include parents" / "`--install-parents`", and **always required for `bundled_in_parent` rows** (their chart exists only inside the parent package). After installing parents, loop back to phase 2 (the previously-skipped差分 now have matchable parents).
 4. **Apply auto** — place files for clear matches
 5. **Haiku batch** — delegate the ambiguous cases to a Haiku subagent, then apply its decisions
 6. **GDrive folder rescue** — for any remaining errors caused by GDrive folder URLs on `url_diff` (the script auto-handles GDrive `/file/d/` URLs but not folder URLs for diffs), enumerate via `embeddedfolderview` and rerun for those md5s
@@ -55,15 +55,28 @@ When it finishes, report the counters:
 - `auto_dry` — clear matches, will be placed in phase 3
 - `ambiguous` — go to Haiku in phase 4
 - `no_parent` — parent song not installed; skipped (user can install the parent and rerun later)
+- `bundled_in_parent` — the table gives no usable `url_diff`, so the差分 ships
+  inside the parent package at the entry's `url`. These land in
+  `no_parent.jsonl` too and are **only** installable via phase 3 — there is
+  nothing for phase 4 to place. Mention them explicitly when reporting counts,
+  because they need the parent download even when the user said "差分だけ".
 - `error` — usually GDrive folder URLs or dead links; handle in phase 5
 
 Show the user the counts and confirm before applying. Do NOT auto-apply without explicit confirmation.
 
 ## Phase 3 (optional): install parents
 
-Only run this if the user asked for parent download. Otherwise skip to phase 4.
+Run this if the user asked for parent download, **or** if the dry-run produced
+any `bundled_in_parent` rows — for those the parent package is the only source
+of the chart, so skipping phase 3 means they can never be installed. Otherwise
+skip to phase 4.
 
 If `<state-dir>/no_parent.jsonl` is empty, also skip.
+
+A parent whose folder already exists is no longer a dead end: `install_parents.py`
+merges in only the files that are missing (status `merged`) and never overwrites,
+which is what recovers a bundled差分 when the user owns an older, chart-incomplete
+copy of the parent.
 
 Before running, estimate the size and **confirm with the user**: typical parent
 song zips are ~50–150MB each, so N parents can mean tens of GB. The script
@@ -358,6 +371,14 @@ b. Tell the user:
 
 ## Notes and gotchas
 
+- **Entries with no `url_diff`**: a table can list a差分 whose chart is shipped
+  inside the parent package rather than as its own download (the `url_diff`
+  field is empty, or holds a marker like `本体同梱` instead of a URL). These are
+  classified `bundled_in_parent` and written to `no_parent.jsonl`; phase 3 is
+  the only way to install them. They used to be dropped from the todo list
+  entirely, which made the run report success while silently leaving them out —
+  if a user says "chart X from this table is still missing" and the pipeline
+  claims nothing to do, check `url_diff` for that md5 first.
 - **Encoding**: BMS files are almost always Shift-JIS. `decode_text` tries
   `shift_jis` first then UTF-8. If you see surrogates in `bms_artist`, the
   file isn't actually broken — your terminal probably can't render Japanese.

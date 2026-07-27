@@ -11,8 +11,9 @@ For each unique parent `url` referenced by a no_parent entry, this script:
   2. Downloads the archive into <state-dir>/parent_downloads/.
   3. Extracts it (zip via stdlib, rar/7z/lzh via 7z.exe).
   4. Reads #ARTIST and #TITLE from any chart file inside.
-  5. Moves the contents to `<music-root>/[ARTIST] TITLE/`, skipping if a
-     same-named folder already exists.
+  5. Moves the contents to `<music-root>/[ARTIST] TITLE/`. If that folder
+     already exists, only the files missing from it are added (status
+     'merged'); existing files are never overwritten.
 
 Output:
   <state-dir>/parent_install_log.csv
@@ -479,15 +480,24 @@ def process_parent(parent_url, hint_artist, hint_title, music_root, dl_cache,
                 return out
         folder = parent_folder_name(artist, title)
         target = os.path.join(music_root, folder)
-        if os.path.exists(target):
-            out['status'] = 'exists'
-            out['folder_created'] = folder
-            out['reason'] = 'target folder already exists; skipped'
-            return out
+        already = os.path.exists(target)
+        # merge_extracted_into never overwrites an existing file, so merging
+        # into a folder that is already present is safe — it only fills in what
+        # is missing. That is what rescues a 差分 bundled inside a parent
+        # package when the user owns an older, chart-incomplete copy of it.
         placed, skipped = merge_extracted_into(tmp, target)
-        out['status'] = 'installed'
         out['folder_created'] = folder
-        out['reason'] = f'{placed} files placed, {skipped} skipped'
+        if not already:
+            out['status'] = 'installed'
+            out['reason'] = f'{placed} files placed, {skipped} skipped'
+        elif placed:
+            out['status'] = 'merged'
+            out['reason'] = (f'{placed} new files added to existing folder, '
+                             f'{skipped} already present')
+        else:
+            out['status'] = 'exists'
+            out['reason'] = (f'target folder already complete; '
+                             f'{skipped} files already present')
     return out
 
 
