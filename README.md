@@ -83,7 +83,8 @@ CLI を触らず「1ボタンで全部やる」だけしたい人向け。
 
 **exe 版の制約**:
 
-- **`.rar` / `.7z` / `.lzh` 親アーカイブを展開するには 7-Zip CLI が別途必要**
+- **`.rar` / `.7z` / `.lzh` アーカイブ（親・差分の双方）を展開するには
+  7-Zip CLI が別途必要**
   （公式インストーラを入れれば `C:\Program Files\7-Zip\7z.exe` が自動検出される）。
   `.zip` のみで済むケースなら不要。
 - **ambiguous ケース（複数候補フォルダがあって自動判定できない差分）の
@@ -100,7 +101,7 @@ CLI を触らず「1ボタンで全部やる」だけしたい人向け。
 ### 前提
 
 - **Python 3.10+**（標準ライブラリのみ。追加パッケージ不要）
-- **7-Zip CLI**（親アーカイブの `.rar` / `.7z` / `.lzh` 展開用。`.zip` のみで済むなら不要）
+- **7-Zip CLI**（親・差分アーカイブの `.rar` / `.7z` / `.lzh` 展開用。`.zip` のみで済むなら不要）
   - Windows: [公式インストーラ](https://www.7-zip.org/) を入れると `C:\Program Files\7-Zip\7z.exe` に置かれて自動検出されます
   - macOS: `brew install p7zip`（→ `7z` が PATH に通る）
   - Linux: 各ディストリで `p7zip-full` / `p7zip` 等のパッケージ
@@ -222,6 +223,10 @@ Windows PowerShell でも同様（変数は `$env:` か `$VAR=`、行継続は `
 
 再実行は無料：DLは `<state-dir>/downloads/`（差分）と
 `<state-dir>/parent_downloads/`（親）に md5 / URL ベースでキャッシュされる。
+
+難易度表本体（`header.json` / `data.json`）は毎回取り直すので、表に曲が
+追加されていても自動で拾われる（取得失敗時は警告を出してキャッシュに
+フォールバック）。キャッシュを強制したい場合は `--no-refresh-table`。
 
 ## 失敗一覧の取得
 

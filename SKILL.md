@@ -51,6 +51,12 @@ python <scripts>/install_diffs.py \
 
 Expect roughly 5–10 minutes for a table of ~1500 entries on first run (network-bound). Subsequent runs reuse `<state-dir>/downloads/` and finish in seconds.
 
+The table itself (`header.json` / `data.json`) is re-fetched on every run, so a
+table that gained entries since last time is picked up automatically; if the
+fetch fails the run warns and falls back to the cached copy. Pass
+`--no-refresh-table` to force the cached copy (offline work, or pinning a table
+mid-investigation).
+
 When it finishes, report the counters:
 - `auto_dry` — clear matches, will be placed in phase 3
 - `ambiguous` — go to Haiku in phase 4
@@ -212,7 +218,9 @@ of the previously-no_parent差分 should now auto-match.
 
 Tools required on the machine:
 - 7-Zip at `C:\Program Files\7-Zip\7z.exe` (or equivalent for non-Windows)
-  for `.rar` / `.7z` / `.lzh` extraction. `.zip` works via stdlib.
+  for `.rar` / `.7z` / `.lzh` extraction. `.zip` works via stdlib. Both
+  `install_parents.py` and `install_diffs.py` use it — a `url_diff` pointing at
+  a `.rar` is handled the same way as a parent archive.
 
 The download cache lives at `<state-dir>/parent_downloads/` and is keyed by
 the resolved direct URL; reruns are free.
@@ -379,6 +387,11 @@ b. Tell the user:
   entirely, which made the run report success while silently leaving them out —
   if a user says "chart X from this table is still missing" and the pipeline
   claims nothing to do, check `url_diff` for that md5 first.
+- **Bundle archives on `url_diff`**: some authors publish one archive holding
+  every 差分 they released that month, laid out as `bundle/<SongName>/*.bme`.
+  `extract_chart_blobs` hashes the members, finds the one matching the entry's
+  md5, and keeps only that directory — otherwise all of it would be flattened
+  into a single parent folder. Flat single-song archives are unaffected.
 - **Encoding**: BMS files are almost always Shift-JIS. `decode_text` tries
   `shift_jis` first then UTF-8. If you see surrogates in `bms_artist`, the
   file isn't actually broken — your terminal probably can't render Japanese.

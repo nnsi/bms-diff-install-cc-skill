@@ -10,7 +10,10 @@ Pipeline per entry:
   2. Download url_diff (GDrive /file/d/{ID}/ URLs are auto-normalized; folder
      URLs need manual handling — they get logged as errors).
   3. Extract chart files (.bms/.bme/.bml/.pms/.bmson) and BGA assets from the
-     zip (or treat as raw BMS if not a zip).
+     archive — zip in-process, rar/7z/lzh via 7-Zip — or treat the body as a
+     raw BMS if it is not an archive. When the archive is a bundle carrying
+     差分 for many songs, only the directory holding this entry's own md5 is
+     kept, so unrelated charts are not poured into the parent folder.
   4. Parse first chart's #WAV refs and score every music folder by hit count.
   5. Decide auto / ambiguous / no_parent based on hit ratio and gap to 2nd.
   6. In --apply mode, copy chart + BGA files into the chosen parent folder
@@ -22,15 +25,22 @@ Output state files:
   <state-dir>/no_parent.jsonl  parent song apparently not installed
   <state-dir>/errors.jsonl     download/parse errors
   <state-dir>/downloads/       cached url_diff bodies (keyed by md5)
-  <state-dir>/header.json      cached table header
-  <state-dir>/data.json        cached table body
+  <state-dir>/header.json      cached table header (re-fetched each run unless
+                               --no-refresh-table)
+  <state-dir>/data.json        cached table body (likewise)
 """
 
-import argparse, csv, io, json, os, re, sqlite3, sys, time, traceback, zipfile
+import argparse, csv, hashlib, io, json, os, re, sqlite3, sys, tempfile
+import time, traceback, zipfile
 import urllib.request, urllib.error, urllib.parse
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from collections import Counter
 from threading import Lock
+
+try:                     # imported as part of the `scripts` package (run_gui.py)
+    from . import install_parents
+except ImportError:      # run directly: python scripts/install_diffs.py
+    import install_parents
 
 CHART_EXT  = ('.bms','.bme','.bml','.pms','.bmson')
 BGA_EXT    = ('.bmp','.png','.jpg','.jpeg','.gif','.wmv','.mp4','.avi','.mov','.webm','.mpg','.mpeg')
@@ -172,23 +182,64 @@ def looks_like_html(blob):
     return head.startswith(b'<')
 
 
-def extract_chart_blobs(blob):
-    out = []
+def _archive_members(blob):
+    """Return [(arcname, data)] for every file in an archive blob, or None if
+    the blob is not an archive at all. ZIP is read in-process; rar/7z/lzh go
+    through the same 7-Zip helper install_parents.py uses, so a 差分 published
+    as a .rar is no longer a dead end."""
     if blob[:2] == b'PK':
         try:
             with zipfile.ZipFile(io.BytesIO(blob)) as z:
-                for n in z.namelist():
-                    if n.endswith('/'): continue
-                    low = n.lower()
-                    if low.endswith(CHART_EXT) or low.endswith(BGA_EXT) or low.endswith(AUDIO_EXT):
-                        out.append((n, z.read(n)))
+                return [(n, z.read(n)) for n in z.namelist() if not n.endswith('/')]
         except zipfile.BadZipFile:
-            return []
-        return out
-    head = blob[:200].lower()
-    if b'#title' in head or b'#player' in head or b'#genre' in head:
-        return [('chart.bms', blob)]
-    return []
+            return None
+    with tempfile.TemporaryDirectory(prefix='bms_diff_arc_') as tmp:
+        arc = os.path.join(tmp, 'archive.bin')
+        with open(arc, 'wb') as f:
+            f.write(blob)
+        if install_parents.detect_archive_type(arc) is None:
+            return None
+        dest = os.path.join(tmp, 'x')
+        ok, msg = install_parents.extract_archive(arc, dest)
+        if not ok:
+            raise RuntimeError(f'archive extract failed: {msg}')
+        members = []
+        for dirpath, _, filenames in os.walk(dest):
+            for fn in filenames:
+                path = os.path.join(dirpath, fn)
+                rel = os.path.relpath(path, dest).replace(os.sep, '/')
+                with open(path, 'rb') as f:
+                    members.append((rel, f.read()))
+        return members
+
+
+def _arc_dirname(arcname):
+    return arcname.rsplit('/', 1)[0] if '/' in arcname else ''
+
+
+def extract_chart_blobs(blob, want_md5=None):
+    members = _archive_members(blob)
+    if members is None:
+        head = blob[:200].lower()
+        if b'#title' in head or b'#player' in head or b'#genre' in head:
+            return [('chart.bms', blob)]
+        return []
+    out = [(n, d) for n, d in members
+           if n.lower().endswith(CHART_EXT + BGA_EXT + AUDIO_EXT)]
+    # Some url_diff downloads are bundles holding 差分 for dozens of different
+    # songs (one archive per release month, say). place_files() flattens every
+    # member into the chosen parent folder, so shipping the whole bundle would
+    # pour unrelated songs' charts into it. Once the entry's own chart is
+    # identifiable by md5, keep only what sits in the same directory as it.
+    if want_md5:
+        home = next((_arc_dirname(n) for n, d in out
+                     if n.lower().endswith(CHART_EXT)
+                     and hashlib.md5(d).hexdigest() == want_md5), None)
+        if home is not None:
+            beside = [(n, d) for n, d in out if _arc_dirname(n) == home]
+            if beside:
+                return beside
+    return out
 
 
 def basename_safe(arcname):
@@ -210,20 +261,31 @@ def place_files(target_folder, files, dry_run):
     return placed, skipped
 
 
-def load_table(header_url, state_dir):
-    header_path = os.path.join(state_dir, 'header.json')
-    data_path = os.path.join(state_dir, 'data.json')
-    if not os.path.exists(header_path):
-        data, _ = fetch(header_url)
-        with open(header_path, 'wb') as f: f.write(data)
-    with open(header_path, 'r', encoding='utf-8') as f:
-        header = json.load(f)
+def load_table(header_url, state_dir, refresh=True):
+    """Load the table header and body, refreshing the on-disk cache by default.
+
+    A difficulty table gains entries over time, so reusing a cached data.json
+    across runs makes the pipeline silently under-report what is missing — it
+    reports "Nothing to do" for charts the table has since added. We therefore
+    re-fetch unless told otherwise, and fall back to the cached copy when the
+    fetch fails so an offline rerun still works.
+    """
+    def cached(path, url, label):
+        if refresh or not os.path.exists(path):
+            try:
+                blob, _ = fetch(url)
+                with open(path, 'wb') as f: f.write(blob)
+            except Exception as e:
+                if not os.path.exists(path):
+                    raise
+                print(f'  warning: could not refresh {label} ({e}); '
+                      f'falling back to the cached copy')
+        with open(path, 'r', encoding='utf-8') as f:
+            return json.load(f)
+
+    header = cached(os.path.join(state_dir, 'header.json'), header_url, 'header.json')
     data_url = urllib.parse.urljoin(header_url, header['data_url'])
-    if not os.path.exists(data_path):
-        data, _ = fetch(data_url)
-        with open(data_path, 'wb') as f: f.write(data)
-    with open(data_path, 'r', encoding='utf-8') as f:
-        rows = json.load(f)
+    rows = cached(os.path.join(state_dir, 'data.json'), data_url, 'data.json')
     return header, rows
 
 
@@ -303,7 +365,7 @@ def worker(ent, idx, dry_run, state, dl_cache):
                       'HTML response (url_diff points at a landing page)',
                       err=f'HTML page returned; url_diff is not a direct archive link: {url}')
             return
-        files = extract_chart_blobs(blob)
+        files = extract_chart_blobs(blob, ent['md5'])
         if not files:
             state.log(ent, 'error', None, 0, 0, 'no chart files in download',
                       err='extract returned empty')
@@ -383,6 +445,14 @@ def main(argv=None):
     p.add_argument('--limit', type=int)
     p.add_argument('--md5')
     p.add_argument('--level')
+    p.add_argument('--refresh-table', dest='refresh_table',
+                   action='store_true', default=True,
+                   help='Re-fetch the table header/body before running (default)')
+    p.add_argument('--no-refresh-table', dest='refresh_table',
+                   action='store_false',
+                   help='Reuse the cached header.json/data.json in --state-dir. '
+                        'Avoids two requests, but a table that gained entries '
+                        'since the last run will under-report what is missing.')
     args = p.parse_args(argv)
 
     _reconfigure_utf8()
@@ -401,7 +471,8 @@ def main(argv=None):
     print(f'  installed charts: {len(installed)}')
 
     print('Loading table…')
-    header, rows = load_table(args.header_url, state_dir)
+    header, rows = load_table(args.header_url, state_dir,
+                              refresh=args.refresh_table)
     print(f'  name: {header.get("name")!r}  symbol: {header.get("symbol")!r}')
     print(f'  {len(rows)} entries')
 
