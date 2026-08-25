@@ -42,32 +42,41 @@ def _parse_one(path: str) -> 'songdata.SongRow':
 
 
 def _enumerate_from_state(state_dir: str, music_root: str) -> List[str]:
-    """Read state-dir/results.csv from the parent install_diffs run.
+    """Read deterministic and reviewed placement logs from a state directory.
 
-    Each row has columns including ``placed`` (basenames of the dropped
-    chart files, semicolon-separated when one differential archive
-    contains multiple files) and ``top_folder`` (the chosen parent's
-    folder name under ``music_root``). Build the full paths and return.
+    Include both newly placed and already-existing files so a repeated apply
+    followed by registration still discovers the charts. Reviewed placements
+    use ``folder`` while deterministic results use ``top_folder``.
     """
-    csv_path = os.path.join(state_dir, 'results.csv')
     out: List[str] = []
-    if not os.path.exists(csv_path):
-        print(f'[songdb] {csv_path}: not found', file=sys.stderr)
-        return out
-    with open(csv_path, encoding='utf-8', newline='') as f:
-        rd = csv.DictReader(f)
-        for r in rd:
-            placed = (r.get('placed') or '').strip()
-            top = (r.get('top_folder') or '').strip()
-            if not placed or not top:
-                continue
-            for name in placed.split(';'):
-                name = name.strip()
-                if not name:
+    seen = set()
+    sources = [
+        (os.path.join(state_dir, 'results.csv'), 'top_folder'),
+        (os.path.join(state_dir, 'review_apply_log.csv'), 'folder'),
+    ]
+    for csv_path, folder_column in sources:
+        if not os.path.exists(csv_path):
+            continue
+        with open(csv_path, encoding='utf-8', newline='') as f:
+            for row in csv.DictReader(f):
+                folder = (row.get(folder_column) or '').strip()
+                names = ';'.join(filter(None, (
+                    (row.get('placed') or '').strip(),
+                    (row.get('skipped_existing') or '').strip(),
+                )))
+                if not folder or not names:
                     continue
-                full = os.path.join(music_root, top, name)
-                if os.path.exists(full):
-                    out.append(full)
+                for name in names.split(';'):
+                    name = name.strip()
+                    if not name:
+                        continue
+                    full = os.path.join(music_root, folder, name)
+                    key = os.path.normcase(os.path.abspath(full))
+                    if os.path.exists(full) and key not in seen:
+                        out.append(full)
+                        seen.add(key)
+    if not out:
+        print(f'[songdb] no placed chart files found in {state_dir}', file=sys.stderr)
     return out
 
 

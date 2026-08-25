@@ -21,7 +21,7 @@ Pipeline per entry:
 
 Output state files:
   <state-dir>/results.csv      one row per processed entry
-  <state-dir>/ambiguous.jsonl  cases needing Haiku judgment
+  <state-dir>/ambiguous.jsonl  cases needing model review
   <state-dir>/no_parent.jsonl  parent song apparently not installed
   <state-dir>/errors.jsonl     download/parse errors
   <state-dir>/downloads/       cached url_diff bodies (keyed by md5)
@@ -30,7 +30,7 @@ Output state files:
   <state-dir>/data.json        cached table body (likewise)
 """
 
-import argparse, csv, hashlib, io, json, os, re, sqlite3, sys, tempfile
+import argparse, csv, hashlib, io, json, os, re, sqlite3, sys, tempfile, unicodedata
 import time, traceback, zipfile
 import urllib.request, urllib.error, urllib.parse
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -171,6 +171,56 @@ def decide(ranked, total):
     if top_ratio >= SKIP_RATIO:
         return ('ambiguous', top_folder, top_hits, f'ratio={top_ratio:.2f} gap={gap:.2f}')
     return ('no_parent', top_folder, top_hits, f'ratio={top_ratio:.2f} gap={gap:.2f}')
+
+
+def _metadata_key(value, strip_suffix=False):
+    if not value:
+        return ''
+    value = unicodedata.normalize('NFKC', str(value)).casefold()
+    if strip_suffix:
+        value = re.sub(r'\s*\[[^\]]*\]\s*$', '', value)
+        value = re.sub(r'\s*\(sp[^)]*\)\s*$', '', value, flags=re.I)
+    return ''.join(ch for ch in value if ch.isalnum())
+
+
+def ambiguous_candidates(ranked, meta, entry, limit=10):
+    """Keep high-hit candidates while rescuing strong metadata matches.
+
+    Generic sample banks can produce hundreds of tied 400/400 folders. A real
+    parent installed late in directory order would otherwise fall outside the
+    fixed top-five review window even when its artist and title match exactly.
+    """
+    artists = {
+        _metadata_key(meta.get('artist')),
+        _metadata_key(entry.get('artist')),
+    } - {''}
+    titles = {
+        _metadata_key(meta.get('title'), strip_suffix=True),
+        _metadata_key(entry.get('title'), strip_suffix=True),
+    } - {''}
+    metadata_matches = []
+    for hits, folder in ranked:
+        folder_key = _metadata_key(os.path.basename(folder))
+        artist_match = any(len(key) >= 3 and key in folder_key for key in artists)
+        title_match = any(len(key) >= 3 and key in folder_key for key in titles)
+        score = int(artist_match) + int(title_match)
+        if score:
+            metadata_matches.append((score, hits, folder))
+    metadata_matches.sort(key=lambda item: (item[0], item[1]), reverse=True)
+
+    selected = []
+    seen = set()
+    for _, hits, folder in metadata_matches:
+        if folder not in seen:
+            selected.append((hits, folder))
+            seen.add(folder)
+    for hits, folder in ranked:
+        if folder not in seen:
+            selected.append((hits, folder))
+            seen.add(folder)
+        if len(selected) >= limit:
+            break
+    return selected[:limit]
 
 
 def looks_like_html(blob):
@@ -398,8 +448,9 @@ def worker(ent, idx, dry_run, state, dl_cache):
             state.log(ent, 'auto' if not dry_run else 'auto_dry',
                       folder, top_hits, total, note, placed, skipped)
         elif decision == 'ambiguous':
+            review_ranked = ambiguous_candidates(ranked, meta, ent)
             cands = [{'folder': os.path.basename(f), 'hits': h, 'path': f}
-                     for h, f in ranked[:5]]
+                     for h, f in review_ranked]
             state.log(ent, 'ambiguous', folder, top_hits, total, note,
                       ambig_info={
                           'md5': ent['md5'], 'title': ent.get('title'),
@@ -525,7 +576,7 @@ def main(argv=None):
     state.close()
     print('\nDone.')
     print(f'Counters: {dict(state.counts)}')
-    for label, path in [('results', state.results_path), ('ambiguous (for Haiku)', state.ambig_path),
+    for label, path in [('results', state.results_path), ('ambiguous (for review)', state.ambig_path),
                         ('no_parent', state.no_parent_path), ('errors', state.err_path)]:
         print(f'  {label}: {path}')
     return 0

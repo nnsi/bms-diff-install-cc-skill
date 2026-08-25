@@ -18,8 +18,8 @@ For each unique parent `url` referenced by a no_parent entry, this script:
 Output:
   <state-dir>/parent_install_log.csv
 
-Unknown hosts and complex pages produce 'needs_haiku' rows in the log; SKILL.md
-explains how to delegate those to a Haiku subagent in a follow-up pass.
+Unknown hosts and complex pages produce 'needs_browser' rows in the log;
+SKILL.md explains the Codex resolution passes for those rows.
 """
 
 import argparse, csv, io, json, os, re, shutil, subprocess, sys, tempfile, time
@@ -159,7 +159,7 @@ def pick_main_file_from_folder(files):
 
 
 def resolve(url, max_depth=4):
-    """Returns ('direct', url) on success, ('needs_haiku', reason, html?) or
+    """Returns ('direct', url) on success, ('needs_browser', reason, html?) or
     ('error', reason) on failure."""
     seen = set()
     for _ in range(max_depth):
@@ -198,10 +198,10 @@ def resolve(url, max_depth=4):
         if m:
             files = parse_gdrive_folder(m.group(1))
             if not files:
-                return ('needs_haiku', 'gdrive folder: could not list files')
+                return ('needs_browser', 'gdrive folder: could not list files')
             main = pick_main_file_from_folder(files)
             if not main:
-                return ('needs_haiku', f'gdrive folder: {len(files)} files, none look main')
+                return ('needs_browser', f'gdrive folder: {len(files)} files, none look main')
             url = f'https://drive.google.com/uc?export=download&id={main[0]}'
             continue
 
@@ -227,7 +227,7 @@ def resolve(url, max_depth=4):
                 return ('error', f'manbow fetch failed: {e}')
             sub = parse_manbow_event(html)
             if not sub:
-                return ('needs_haiku', 'manbow: DownLoadAddress not found')
+                return ('needs_browser', 'manbow: DownLoadAddress not found')
             url = urllib.parse.urljoin(url, sub)
             continue
 
@@ -239,7 +239,7 @@ def resolve(url, max_depth=4):
                 return ('error', f'venue fetch failed: {e}')
             sub = parse_venue_bmssearch(html)
             if not sub:
-                return ('needs_haiku', 'venue.bmssearch: link not found')
+                return ('needs_browser', 'venue.bmssearch: link not found')
             url = urllib.parse.urljoin(url, sub)
             continue
 
@@ -253,12 +253,12 @@ def resolve(url, max_depth=4):
             m = re.search(r'href="(https?://[^"]+\.(?:zip|rar|7z|lzh))"', text, re.I)
             if m:
                 url = m.group(1); continue
-            return ('needs_haiku', 'bmssearch: no direct archive link')
+            return ('needs_browser', 'bmssearch: no direct archive link')
 
         # AXFC, Mega, MediaFire — typically need JS or captcha
         if host in ('www1.axfc.net','www.axfc.net','mega.nz','www.mediafire.com',
                     'mediafire.com'):
-            return ('needs_haiku', f'{host}: likely needs browser')
+            return ('needs_browser', f'{host}: likely needs browser')
 
         # docs.google.com uc?id= form
         if host == 'docs.google.com':
@@ -266,7 +266,7 @@ def resolve(url, max_depth=4):
             if m:
                 return ('direct', f'https://drive.google.com/uc?export=download&id={m.group(1)}')
 
-        return ('needs_haiku', f'unknown host: {host}')
+        return ('needs_browser', f'unknown host: {host}')
 
     return ('error', 'max depth exceeded')
 
@@ -521,7 +521,7 @@ def main(argv=None):
     p.add_argument('--limit', type=int, help='Process at most N unique parents')
     p.add_argument('--host', help='Only process URLs from this hostname')
     p.add_argument('--md5', help='Only process the parent of this差分 md5')
-    p.add_argument('--overrides', help='JSON file mapping original parent URL to a replacement direct URL (output of a Haiku resolution pass)')
+    p.add_argument('--overrides', help='JSON file mapping original parent URL to a replacement direct URL (output of a Codex resolution pass)')
     args = p.parse_args(argv)
 
     _reconfigure_utf8()
@@ -587,7 +587,7 @@ def main(argv=None):
                          'size_bytes','md5_examples'])
         def run(item):
             url, info = item
-            # If Haiku (or manual mapping) provided a replacement, treat that as the start URL
+            # If Codex (or a manual mapping) provided a replacement, use it as the start URL.
             url_for_resolve = overrides.get(url, url)
             r = process_parent(url_for_resolve, info['artist'], info['title'],
                                args.music_root, dl_cache, info['md5s'], args.dry_run)
@@ -619,7 +619,7 @@ def main(argv=None):
     print(f'\nDone. counts={dict(counts)}')
     print(f'log: {log_path}')
     print(f'archives cached in: {dl_cache}')
-    print('\nNext: rerun install_diffs.py --apply to place差分 against the newly installed parents.')
+    print('\nParent set changed; refresh matching with install_diffs.py before placement.')
     return 0
 
 

@@ -1,419 +1,196 @@
 ---
 name: bms-diff-install
-description: Install BMS差分 (chart differentials) and optionally their parent songs from a beatoraja-compatible difficulty table. Downloads each entry's url_diff, finds the matching parent song folder under the user's music root by matching #WAV keysound filenames, and copies chart files into place without overwriting. Clear matches go through deterministic scoring; ambiguous cases are batch-judged by a Haiku subagent; charts whose parent isn't installed are skipped — unless `--install-parents` is on, in which case the parent's source URL is resolved through host adapters (manbow / venue.bmssearch / GDrive / Dropbox / archive.org / ...) and downloaded too. Use when the user asks to install / sync / pull-down 差分 from a 難易度表 (difficulty table) URL.
+description: Install or synchronize BMS差分 from a beatoraja-compatible difficulty table, optionally download missing parent songs, and place charts into matching music folders without overwriting existing files. Use for 難易度表 URL, header.json, url_diff, or beatoraja差分 installation requests; do not use for ordinary BMS library organization unrelated to a difficulty table.
 ---
 
-# Install BMS差分 from a difficulty table
+# Install BMS差分
 
-You are guiding the user through installing BMS差分 (chart-only files that reference an existing parent song's keysounds) from a beatoraja-compatible difficulty table (`<meta name="bmstable" content="header.json">` style).
+Install chart differentials from a beatoraja-compatible difficulty table. Use
+the bundled scripts for deterministic downloading, parsing, matching, and file
+placement. Reserve model judgment for cases the matcher marks `ambiguous`.
 
-## Phases
+## Resolve the skill root
 
-1. **Gather parameters** — confirm table URL and local paths
-2. **Dry-run** — score every entry, partition into auto / ambiguous / no_parent / bundled_in_parent / error
-3. **(Optional) Install parents** — for `no_parent` charts, download the parent songs from their `url` field. Triggered when the user says "install parents too" / "親もDL" / "include parents" / "`--install-parents`", and **always required for `bundled_in_parent` rows** (their chart exists only inside the parent package). After installing parents, loop back to phase 2 (the previously-skipped差分 now have matchable parents).
-4. **Apply auto** — place files for clear matches
-5. **Haiku batch** — delegate the ambiguous cases to a Haiku subagent, then apply its decisions
-6. **GDrive folder rescue** — for any remaining errors caused by GDrive folder URLs on `url_diff` (the script auto-handles GDrive `/file/d/` URLs but not folder URLs for diffs), enumerate via `embeddedfolderview` and rerun for those md5s
-7. **Report** — summarize placements, tell the user to rescan in beatoraja
+Treat the directory containing this `SKILL.md` as `SKILL_ROOT`. Resolve every
+script to an absolute path under `SKILL_ROOT/scripts`; do not assume the skill
+is installed at a fixed user-home path. Use an available Python 3.10+ command
+(`python`, `python3`, or `py -3`) consistently throughout the run.
 
-The scripts live alongside this SKILL.md:
-- `scripts/install_diffs.py` — main差分 pipeline (scoring, placement, dry-run/apply)
-- `scripts/install_parents.py` — parent-song downloader (phase 3)
-- `scripts/prepare_haiku_input.py` — slims `ambiguous.jsonl` for Haiku
-- `scripts/apply_haiku.py` — applies Haiku's decisions
-- `scripts/songdb/` — jbms-parser-compatible Python BMS parser + songdata.db
-  writer; invoked as `python -m scripts.songdb` (phase 7)
+Important scripts:
 
-Refer to them with `${CLAUDE_PLUGIN_ROOT:-$HOME/.claude}/skills/bms-diff-install/scripts/<name>.py` or by absolute path on Windows. On this user's machine they're at `C:\Users\norfa\.claude\skills\bms-diff-install\scripts\`.
+- `install_diffs.py`: dry-run and deterministic placement pipeline
+- `install_parents.py`: missing-parent downloader
+- `prepare_review_input.py`: reduce ambiguous cases for model review
+- `apply_review.py`: validate and apply reviewed placement decisions
+- `report.py`: create the consolidated unrecovered report
+- `scripts/songdb`: optional direct registration into `songdata.db`
 
-## Phase 1: gather parameters
+The older `prepare_haiku_input.py` and `apply_haiku.py` files are compatibility
+helpers. Do not use them for new Codex runs.
 
-You need four things. Probe the environment first, then ask the user only for what you can't infer.
+## Authorization boundaries
 
-- **`HEADER_URL`** — URL of the table's `header.json`. If the user gave a page URL (e.g. `https://potechang.github.io/like_st/`), fetch it and read the `<meta name="bmstable" content="...">` value — that relative URL resolves to the header JSON. If you can't infer, ask.
-- **`SONGDATA_DB`** — beatoraja's `songdata.db`. Typically `<beatoraja-install>/songdata.db`. Look in the cwd first; otherwise ask.
-- **`MUSIC_ROOT`** — root of the music library (parent of `[ARTIST] TITLE/` folders). Usually `../music` relative to the beatoraja install. Confirm by `ls`.
-- **`STATE_DIR`** — where to write logs and the download cache. Default: `<beatoraja-install>/_install_diff/state`. Keep it inside the beatoraja install so it survives across invocations and the DL cache is reused.
+- A user request to install or synchronize a table authorizes the complete
+  in-scope workflow: dry-run, parent downloads, deterministic placement,
+  reviewed placement, and report generation. Continue through those phases
+  without pausing for repeated confirmation. Report counts and download-size
+  estimates as progress updates instead.
+- Honor narrower requests such as "dry-run only", a host/MD5 filter, or
+  "differences only". Do not expand beyond the table, paths, and filters the
+  user placed in scope.
+- Parent packages are often 50–150 MB each. Resolve/deduplicate them with
+  `install_parents.py --dry-run` and report the unique count and estimated
+  range, but do not stop solely to request another approval.
+- Never overwrite an existing music file. The bundled placement scripts enforce
+  this; do not bypass them with direct copies.
+- For a full install/synchronize request, register placed charts in
+  `songdata.db` as the final step when beatoraja is not running. Create a
+  timestamped backup first and do not pause for another confirmation. Skip the
+  direct DB write when the player is running or the user requested files-only,
+  dry-run-only, or no database changes; use beatoraja's rescan in those cases.
+- Keep reusable downloads and logs in `STATE_DIR`. Do not clear caches unless
+  the user explicitly requests it.
 
-Verify all four exist before continuing.
+## Gather inputs
 
-## Phase 2: dry-run
+Discover what can be inferred locally before asking the user. Required values:
 
-```
-python <scripts>/install_diffs.py \
-  --header-url "$HEADER_URL" \
-  --songdata-db "$SONGDATA_DB" \
-  --music-root  "$MUSIC_ROOT" \
-  --state-dir   "$STATE_DIR" \
+- `HEADER_URL`: difficulty-table `header.json`. If given a landing page, read
+  its `<meta name="bmstable" content="...">` and resolve that value relative to
+  the page URL.
+- `SONGDATA_DB`: beatoraja's `songdata.db`.
+- `MUSIC_ROOT`: directory containing folders such as `[ARTIST] TITLE`.
+- `STATE_DIR`: persistent working directory, defaulting to
+  `<beatoraja-install>/_install_diff/state` when appropriate.
+
+Verify that `SONGDATA_DB` and `MUSIC_ROOT` exist and that `STATE_DIR` resolves
+to the intended beatoraja workspace before continuing.
+
+## Run the workflow
+
+### 1. Dry-run the table
+
+```text
+python <SKILL_ROOT>/scripts/install_diffs.py \
+  --header-url <HEADER_URL> \
+  --songdata-db <SONGDATA_DB> \
+  --music-root <MUSIC_ROOT> \
+  --state-dir <STATE_DIR> \
   --dry-run
 ```
 
-Expect roughly 5–10 minutes for a table of ~1500 entries on first run (network-bound). Subsequent runs reuse `<state-dir>/downloads/` and finish in seconds.
+Use arguments appropriate to the active shell; the block above is schematic.
+The first run can take 5–10 minutes for a large table. Later runs reuse
+`STATE_DIR/downloads`. The table is refreshed each run and falls back to its
+cache on fetch failure; use `--no-refresh-table` only for intentional offline
+or pinned-table work.
 
-The table itself (`header.json` / `data.json`) is re-fetched on every run, so a
-table that gained entries since last time is picked up automatically; if the
-fetch fails the run warns and falls back to the cached copy. Pass
-`--no-refresh-table` to force the cached copy (offline work, or pinning a table
-mid-investigation).
+Report these counters:
 
-When it finishes, report the counters:
-- `auto_dry` — clear matches, will be placed in phase 3
-- `ambiguous` — go to Haiku in phase 4
-- `no_parent` — parent song not installed; skipped (user can install the parent and rerun later)
-- `bundled_in_parent` — the table gives no usable `url_diff`, so the差分 ships
-  inside the parent package at the entry's `url`. These land in
-  `no_parent.jsonl` too and are **only** installable via phase 3 — there is
-  nothing for phase 4 to place. Mention them explicitly when reporting counts,
-  because they need the parent download even when the user said "差分だけ".
-- `error` — usually GDrive folder URLs or dead links; handle in phase 5
+- `auto_dry`: deterministic placements ready to apply
+- `ambiguous`: cases requiring model review
+- `no_parent`: parent song is not installed
+- `bundled_in_parent`: chart exists only in the parent package
+- `error`: download or parse failure
 
-Show the user the counts and confirm before applying. Do NOT auto-apply without explicit confirmation.
+`bundled_in_parent` always requires the parent-install phase, even when the
+user originally asked for differences only. Treat those packages as part of
+installing the requested charts unless the user explicitly forbids parent
+downloads.
 
-## Phase 3 (optional): install parents
+### 2. Optionally install missing parents
 
-Run this if the user asked for parent download, **or** if the dry-run produced
-any `bundled_in_parent` rows — for those the parent package is the only source
-of the chart, so skipping phase 3 means they can never be installed. Otherwise
-skip to phase 4.
+Run this when the user asked for parents or `bundled_in_parent` is nonzero.
+First resolve URLs without downloading:
 
-If `<state-dir>/no_parent.jsonl` is empty, also skip.
-
-A parent whose folder already exists is no longer a dead end: `install_parents.py`
-merges in only the files that are missing (status `merged`) and never overwrites,
-which is what recovers a bundled差分 when the user owns an older, chart-incomplete
-copy of the parent.
-
-Before running, estimate the size and **confirm with the user**: typical parent
-song zips are ~50–150MB each, so N parents can mean tens of GB. The script
-groups entries by parent URL (dedup), so the actual download count is usually
-smaller than the no_parent line count. Show the unique-URL count first if you
-want to be precise — that's `wc -l no_parent.jsonl` is an over-count; the
-script reports the deduped count when it starts.
-
-```
-python <scripts>/install_parents.py \
-  --state-dir   "$STATE_DIR" \
-  --music-root  "$MUSIC_ROOT" \
-  [--dry-run]    # resolve URLs only, no download (recommended first)
-  [--limit N]    # cap unique parents
-  [--host HOST]  # only this hostname (e.g. manbow.nothing.sh)
-  [--md5 HASH]   # only the parent of one 差分
+```text
+python <SKILL_ROOT>/scripts/install_parents.py \
+  --state-dir <STATE_DIR> \
+  --music-root <MUSIC_ROOT> \
+  --dry-run
 ```
 
-### Tier 1 — deterministic adapter chain
+Rerun without `--dry-run`. Filters `--limit`, `--host`, and
+`--md5` may be used to keep a large operation within the user's requested
+scope. Existing folders are merged by adding only missing files.
 
-The script resolves each URL through host adapters:
-- **Direct archive** (`.zip`/`.rar`/`.7z`/`.lzh`) → download
-- **manbow.nothing.sh/event/event.cgi** → parse `<Th>DownLoadAddress</B></th><td><a href=URL>` and recurse on that URL
-- **venue.bmssearch.net** → grab the page's archive/GDrive/Dropbox link, recurse
-- **drive.google.com/file/d/{ID}/** → normalize to `uc?export=download&id={ID}`
-- **drive.google.com/drive/folders/{ID}** → enumerate via `embeddedfolderview`, pick the most-likely BMS本体 (largest archive, no "差分"/"sabun"/"diff" in name), recurse
-- **dropbox.com/...?dl=0** → swap to `?dl=1`
-- **dl.dropbox.com / dl.dropboxusercontent.com** → use as-is
-- **archive.org/download/...** → use as-is
-- **web.archive.org / wayback.archive.org** → use as-is
-- **docs.google.com/uc?id=...** → normalize
-- **bmssearch.net info page** → find embedded archive link
-- **Unknown / AXFC / Mega / MediaFire / Wix / OneDrive / etc.** → status `needs_haiku`
+If `parent_install_log.csv` contains `needs_browser`, read
+[references/parent-resolution.md](references/parent-resolution.md). After any
+parent installation, rerun step 1 so the new parents participate in matching.
 
-### Tier 2 — Haiku + WebFetch
+### 3. Apply deterministic placements
 
-For `needs_haiku` rows, spawn a Haiku subagent (`model: "haiku"`) with this
-template:
+Apply the reported `auto_dry` placements without an extra confirmation pause:
 
-```
-Read <state-dir>/parent_install_log.csv and pick the rows where status ==
-"needs_haiku". For each one, fetch the parent_url via WebFetch or the
-browser MCP, locate the BMS本体 download link (look for "本体"/"Body"/"Full"
-labels, the largest .zip/.rar/.7z, or the only file when there's no
-ambiguity). Avoid links labelled "差分" / "sabun" / "diff" / "BGA only".
-
-Write a JSON object to <state-dir>/parent_haiku_urls.json:
-  { "<original parent_url>": "<replacement URL or null>", ... }
+```text
+python <SKILL_ROOT>/scripts/install_diffs.py <same arguments> --apply
 ```
 
-Then re-run `install_parents.py --overrides <state-dir>/parent_haiku_urls.json`
-— the script picks up the replacement URLs and routes each through the
-existing adapter chain.
+This writes only deterministic `auto` cases and never overwrites existing
+files. It leaves ambiguous, missing-parent, and error cases untouched.
 
-### Tier 3 — Sonnet + playwright fallback (for the long tail)
+### 4. Review ambiguous placements
 
-After Tier 2 (Haiku + WebFetch), what's left tends to be:
-- web.archive.org snapshots that returned a tiny HTML stub instead of the file
-- JS-rendered pages (MediaFire, Wix sites, getuploader confirmation forms)
-- Pages where the relevant link only appears after clicking a button
-- Pages with rlkey/session tokens that need a real browser context
+If `ambiguous` is nonzero, read and follow
+[references/ambiguous-placement.md](references/ambiguous-placement.md). Use a
+`gpt-5.6-luna` subagent for the bounded batch judgment, with
+`fork_turns: "none"`; supply the absolute input/output paths and all decision
+rules in its prompt. The subagent must only write `review_decisions.json`, not
+place files. If subagents are unavailable, perform the same review directly.
 
-Empirically a Haiku-with-Bash subagent **does not reliably do this work** — it
-tends to return the URL it was already given without actually navigating
-anywhere. **Use Sonnet** (`model: "sonnet"`) for this tier and give it
-explicit per-case techniques in the prompt.
+When the requested scope includes missing parents and a review case is skipped
+because none of its candidate folders match the chart metadata, treat it as a
+likely false-negative `no_parent`. Make one parent-recovery attempt using that
+entry's table `url`, rerun the deterministic matcher, and review the case again.
+Do not retry the same chart or parent URL indefinitely; after one completed
+parent-recovery pass, preserve a remaining skip in the final report.
 
-Setup (one-time, in `<state-dir>/pw/`):
+### 5. Rescue remaining diff-download errors
 
-```bash
-mkdir -p "<state-dir>/pw"
-cd "<state-dir>/pw"
-cat > package.json <<'EOF'
-{ "name": "bms-pw", "type": "module", "version": "0.0.1" }
-EOF
-npm install playwright
-npx playwright install chromium    # ~110MB, one-time
-```
+For GDrive folder URLs in `errors.jsonl`, enumerate the folder, download the
+chart file or a ZIP containing the relevant chart-side files into
+`STATE_DIR/downloads/<md5>.bin`, then rerun `install_diffs.py --apply --md5
+<hash>` only after placement authorization. Report dead or unsupported links
+without fabricating a successful resolution.
 
-Prepare input for the agent (extract still-failing rows from
-`parent_install_log.csv`, drop the truly hopeless cases like AXFC /
-permanent 404s):
+### 6. Register charts for player visibility
 
-```python
-# scratch helper — see history of this skill for the full version
-# Writes <state-dir>/pw/input.json with one object per case:
-# {parent_url, prev_resolved, prev_reason, hint_artist, hint_title}
-```
+For a full installation, check that beatoraja is not running, create a
+timestamped backup of `songdata.db`, and run:
 
-Then spawn an Agent with `model: "sonnet"` and a prompt that lists, for
-each case, the specific technique that's likely to work. Techniques that
-have proven effective:
-
-- **Wayback CDX**: when a `web.archive.org/web/{ts}/...zip` returns a tiny
-  HTML stub, query `http://web.archive.org/cdx/search/cdx?url=<orig>&output=json&filter=statuscode:200`
-  for alternate snapshots. Pick the row with the largest `length`.
-  Construct the URL as `https://web.archive.org/web/{ts}id_/{orig}` — the
-  `id_` flag returns raw bytes, not the toolbar wrapper. HEAD-check before
-  committing.
-- **MediaFire**: navigate with playwright, `waitForSelector('#downloadButton')`,
-  read its `href` → that's the direct CDN URL.
-- **getuploader**: visit the listing page first to set a session cookie,
-  then navigate to the download URL in the same browser context, click the
-  agreement form's submit button, and capture the `download` event:
-  `await page.waitForEvent('download'); await download.saveAs(path)`.
-- **Dropbox `scl/fi/...?rlkey=...` returning 400**: navigate to the share
-  URL with `dl=0`, click the actual Download button, capture the
-  `download` event. The proper rlkey is sometimes embedded only in
-  client-side state, not in the URL you started with.
-- **GDrive `/drive/u/N/folders/{ID}`**: strip the `/u/N/` segment — the
-  pipeline's regex only matches `/drive/folders/{ID}`. Same ID, the
-  account-index prefix is just routing.
-- **Sites linking to dead `axfc.net`**: check the same page for an alternate
-  URL on a different host (some manbow entries list both); if AXFC is the
-  only option, emit `null`.
-
-The Sonnet agent should either:
-- Emit a *replacement URL* (preferred — let the pipeline's existing
-  adapters handle it), or
-- *Pre-populate the cache* by downloading the file itself into
-  `<state-dir>/parent_downloads/<sanitized_url>.bin` and emitting the
-  synthetic URL (e.g. `https://local-pw/<md5>`) as the override — the
-  pipeline will see the cache hit and skip re-download.
-
-Re-run `install_parents.py --overrides <state-dir>/parent_haiku_urls.json`
-(or `playwright_urls.json` — name doesn't matter, point at whichever) to
-let the pipeline pick those up.
-
-### Post-install, re-run phase 2 (dry-run)
-
-…to refresh `no_parent.jsonl` / `ambiguous.jsonl` / `results.csv` — many
-of the previously-no_parent差分 should now auto-match.
-
-Tools required on the machine:
-- 7-Zip at `C:\Program Files\7-Zip\7z.exe` (or equivalent for non-Windows)
-  for `.rar` / `.7z` / `.lzh` extraction. `.zip` works via stdlib. Both
-  `install_parents.py` and `install_diffs.py` use it — a `url_diff` pointing at
-  a `.rar` is handled the same way as a parent archive.
-
-The download cache lives at `<state-dir>/parent_downloads/` and is keyed by
-the resolved direct URL; reruns are free.
-
-## Phase 4: apply auto
-
-```
-python <scripts>/install_diffs.py ... --apply
-```
-
-Same args as phase 2 but `--apply` replaces `--dry-run`. This re-runs the whole pipeline using the cached downloads, so it's fast. It only writes files for `auto` decisions; ambiguous/no_parent/error are still just logged.
-
-The script never overwrites existing files; if a差分 with the same basename is already in the target folder, it logs to `skipped_existing` and moves on.
-
-## Phase 5: Haiku batch judgment
-
-If `state.counts['ambiguous'] == 0`, skip this phase.
-
-Otherwise:
-
-a. Slim the ambiguous file:
-```
-python <scripts>/prepare_haiku_input.py --state-dir "$STATE_DIR"
-```
-This writes `<state-dir>/haiku_input.json` (a JSON array of cases).
-
-b. Spawn a Haiku subagent via the Agent tool with `model: "haiku"`. Use the prompt template below — it's structured to handle the common pathological cases:
-
-```
-You are judging where to place BMS差分 (chart differentials). For each input
-case, decide which already-installed parent music folder is the correct one
-— or that none of the candidates match.
-
-Read: <state-dir>/haiku_input.json
-
-Each case has:
-- md5: identifier (pass-through)
-- table_title, table_artist: from the difficulty table
-- bms_title, bms_artist: parsed from the BMS file itself (more authoritative)
-- total_wavs: chart's keysound reference count
-- candidates: up to 5 candidate folders with hit counts on the chart's keysounds
-
-DECISION RULES:
-1. Strong artist+title match wins. Folder names follow `[ARTIST] TITLE`.
-   The chart's title often has a suffix like [Eternity] or [remix]; strip
-   that to recover the parent's base title.
-2. When multiple candidates tie at full hits (often 400/400 across 5
-   folders), it usually means the chart uses common sample-bank names.
-   Judge by artist/title against folder names; hit count is meaningless.
-3. Watch for reversed/obfuscated artist names: "niart kcalb / IKIHS" reads
-   as "black train / SHIKI" reversed — that's a SHIKI chart.
-4. If no candidate's folder name matches the artist, mark "skip".
-5. Character variations are fine: fullwidth `：` vs `:`, `／` vs `/`,
-   spacing, brackets — all tolerable.
-6. Dramatic hit-count gap (top >> 2nd) is reliable when artist also
-   matches; still skip if artist truly doesn't appear.
-7. If two folders both legitimately match the artist (e.g. `[SHIKI] Air`
-   and `[SHIKI／IIDX17] Air -★10-`), prefer the simpler/original one.
-
-OUTPUT: Write JSON to <state-dir>/haiku_decisions.json:
-[
-  {"md5": "...", "decision": "place"|"skip", "folder": "<exact basename or null>", "reason": "..."}
-]
-
-Folder names MUST be copy/pasted verbatim from `candidates[].folder`.
-Output exactly one entry per input case.
-
-Use Write tool only — don't print the JSON in your response, just confirm
-you wrote it and briefly note any tricky calls.
-```
-
-c. Apply Haiku's decisions:
-```
-python <scripts>/apply_haiku.py --state-dir "$STATE_DIR" --music-root "$MUSIC_ROOT"
-```
-
-Report the resulting `placed` / `skipped` / `errors` counts.
-
-## Phase 6: GDrive folder rescue (optional)
-
-Check `<state-dir>/errors.jsonl`. For entries whose `url_diff` is a
-`https://drive.google.com/drive/folders/{FOLDER_ID}` URL:
-
-a. Fetch `https://drive.google.com/embeddedfolderview?id={FOLDER_ID}#list`
-   (returns simple HTML).
-b. Extract file IDs from `entry-{FILE_ID}` divs.
-c. For each file, download via
-   `https://drive.google.com/uc?export=download&id={FILE_ID}` and save to
-   `<state-dir>/downloads/{md5}.bin`.
-   - If the folder has multiple files (chart + BGA), zip them first so
-     `extract_chart_blobs` can read them. Or just save the chart file
-     directly if there's only one.
-d. Rerun `install_diffs.py --apply --md5 <hash>` for each rescued entry —
-   the populated cache will route it through scoring and placement.
-
-For non-GDrive errors (dead links, unexpected formats), report them and move on.
-
-## Phase 7: register placed charts into songdata.db (optional)
-
-Beatoraja normally discovers new charts via F5 / `updatesong: true`, which
-walks the entire music root and re-parses every BMS file (expensive on large
-libraries). If the user wants the just-placed差分 to appear without that
-rescan, run:
-
-```
+```text
 python -m scripts.songdb \
-  --songdata-db "$SONGDATA_DB" \
-  --music-root  "$MUSIC_ROOT" \
-  --from-state-dir "$STATE_DIR"
+  --songdata-db <SONGDATA_DB> \
+  --music-root <MUSIC_ROOT> \
+  --from-state-dir <STATE_DIR>
 ```
 
-This reads `<state-dir>/results.csv`, finds the placed BMS / BME / BML /
-PMS / BMSON files in their target folders, parses each one
-(jbms-parser-compatible Python port), and INSERTs a fully-populated `song`
-row directly. **Every column** (md5, sha256, title, artist, notes, length,
-bpm, mode, feature, content, charthash, judge) is bit-exact against
-beatoraja's own scan output — verified at 100% (or 99.x% with stale rows
-from old beatoraja versions) across a 1000-row golden sample against the
-real songdata.db. BMSON support: md5 is stored as "" matching beatoraja's
-convention (beatoraja's BMSONDecoder never md5s). The `folder`/`parent`
-CRC32 columns are inherited from any existing sibling row in the same
-directory (typically the parent BMS), so they're internally consistent
-with whatever bytes the user's JVM emits for path strings — even though
-we can't always replicate that encoding from outside.
+Run from `SKILL_ROOT` so the module resolves correctly. This registers
+deterministic and reviewed placements from the state logs and preserves
+existing favorites/add dates on key collisions. When the player is running or
+database writes were excluded from scope, leave the DB untouched and use
+beatoraja's F5 / 楽曲データベース更新 or `updatesong` instead.
 
-Only do this if explicitly asked, or if the user has expressed pain about
-the F5 cost. Otherwise leave the songdata.db alone and just instruct
-"press F5".
+### 7. Report
 
-When invoked from the skill, run *after* Phase 4 / 5 / 6 (so all placed
-files are on disk), and only for entries marked `placed` in `results.csv`.
-Existing favorites/adddates are preserved on PK collision.
-
-## Phase 8: report
-
-a. Generate the consolidated "not installed" list:
+```text
+python <SKILL_ROOT>/scripts/report.py --state-dir <STATE_DIR>
 ```
-python <scripts>/report.py --state-dir "$STATE_DIR"
-```
-This writes `<state-dir>/unrecovered.md` (grouped by parent URL — actionable
-for the user, e.g. "if you install parent X manually, N差分 unblock") and
-`<state-dir>/unrecovered.csv` (machine-readable).
 
-b. Tell the user:
+Report total placements, remaining categories, and absolute paths to
+`unrecovered.md` and `unrecovered.csv`. State whether `songdata.db` was updated
+or a beatoraja rescan remains necessary.
 
-- Total placed across phases 3, 4, 5
-- How many `no_parent` / `haiku_skip` / `dl_error` charts remain, with a
-  pointer to `unrecovered.md`
-- If you ran phase 7 (`scripts/songdb`), the placed charts are already
-  registered in `songdata.db` — they show up in the selector on next launch
-  with no F5 needed. Otherwise, **they must rescan in beatoraja**: F5 or
-  the "楽曲データベース更新" menu, or set `"updatesong": true` in
-  `config.json` for auto-scan on startup.
-- If they registered the table URL in beatoraja's difficulty-table list,
-  the newly placed差分 will all show up there after the rescan.
+## Operational invariants
 
-## Notes and gotchas
-
-- **Entries with no `url_diff`**: a table can list a差分 whose chart is shipped
-  inside the parent package rather than as its own download (the `url_diff`
-  field is empty, or holds a marker like `本体同梱` instead of a URL). These are
-  classified `bundled_in_parent` and written to `no_parent.jsonl`; phase 3 is
-  the only way to install them. They used to be dropped from the todo list
-  entirely, which made the run report success while silently leaving them out —
-  if a user says "chart X from this table is still missing" and the pipeline
-  claims nothing to do, check `url_diff` for that md5 first.
-- **Bundle archives on `url_diff`**: some authors publish one archive holding
-  every 差分 they released that month, laid out as `bundle/<SongName>/*.bme`.
-  `extract_chart_blobs` hashes the members, finds the one matching the entry's
-  md5, and keeps only that directory — otherwise all of it would be flattened
-  into a single parent folder. Flat single-song archives are unaffected.
-- **Encoding**: BMS files are almost always Shift-JIS. `decode_text` tries
-  `shift_jis` first then UTF-8. If you see surrogates in `bms_artist`, the
-  file isn't actually broken — your terminal probably can't render Japanese.
-  Confirm by checking the raw UTF-8 bytes of the state files (`xxd`).
-- **songdata.db `text_factory=bytes`**: beatoraja stores some columns as
-  raw bytes that may be mojibake'd, so `installed_md5_set` uses bytes mode
-  and only decodes `md5` as ASCII. Don't try to read titles/paths from the
-  DB — work from the filesystem instead.
-- **Don't widen tolerances**: `AUTO_RATIO=0.95`, `AUTO_GAP=0.20` are tuned
-  to avoid false positives. Tied 400/400 candidates are common when差分
-  use only common sample names (kick/snare/etc.); those should fall to
-  Haiku, not auto.
-- **Resume is free**: rerunning the skill on the same table reuses the
-  download cache. Only entries whose md5 isn't yet in songdata.db are
-  processed, so once the user rescans, a rerun is essentially a no-op.
-- **Cost discipline**: don't have Haiku judge the auto cases too — they're
-  unambiguous (100% hits with a huge gap). Only feed it `ambiguous.jsonl`.
-- **Parent folder naming**: `install_parents.py` derives the folder name from
-  the *parent* song's #TITLE / #ARTIST inside the downloaded archive, with the
-  差分 suffix (`[Eternity]`, `(SP …)` at the end of the title) stripped. The
-  result is `[ARTIST] TITLE` matching beatoraja's convention. Conflicts with
-  existing folders are reported as `exists` and not overwritten.
-- **GDrive virus-scan**: `install_parents.py` automatically detects the
-  ~100MB+ confirmation page and re-POSTs the embedded form. No user
-  intervention needed.
+- `AUTO_RATIO=0.95` and `AUTO_GAP=0.20` protect against false positives. Do
+  not widen them to force more automatic matches.
+- Tied full-hit candidates often use generic sample names; artist/title fit is
+  more important than hit count in those cases.
+- Entries without a usable `url_diff` are `bundled_in_parent`; they cannot be
+  recovered by ambiguous placement review.
+- BMS text commonly uses Shift-JIS. State JSON/CSV and all skill-maintained text
+  remain UTF-8.
+- `.rar`, `.7z`, and `.lzh` extraction requires 7-Zip; `.zip` uses Python's
+  standard library.
+- A repeated run is expected and reuses both diff and parent caches.

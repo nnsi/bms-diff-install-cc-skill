@@ -6,8 +6,9 @@ Cross-joins:
   - results.csv           overall decision per差分 (auto/ambiguous/no_parent/error)
   - no_parent.jsonl       差分 whose parent isn't installed (after diff pipeline)
   - errors.jsonl          差分 with download / parse failures
-  - haiku_decisions.json  Haiku place/skip judgments (skip = couldn't place)
-  - parent_install_log.csv parent URL resolution status (installed / needs_haiku / error)
+  - review_decisions.json Codex place/skip judgments (skip = couldn't place)
+  - review_apply_log.csv  reviewed placements that failed during application
+  - parent_install_log.csv parent URL resolution status (installed / needs_browser / error)
   - data.json             cached difficulty table (for joining titles/URLs)
 
 Outputs:
@@ -61,17 +62,27 @@ def main(argv=None):
     errors    = load_jsonl(os.path.join(s, 'errors.jsonl'))
     parent_log = {row['parent_url']: row for row in load_csv(os.path.join(s, 'parent_install_log.csv'))}
 
-    haiku_skipped = {}
-    hd = os.path.join(s, 'haiku_decisions.json')
-    if os.path.exists(hd):
-        with open(hd, 'r', encoding='utf-8') as f:
+    review_skipped = {}
+    decisions_path = os.path.join(s, 'review_decisions.json')
+    legacy_path = os.path.join(s, 'haiku_decisions.json')
+    if not os.path.exists(decisions_path) and os.path.exists(legacy_path):
+        decisions_path = legacy_path
+    if os.path.exists(decisions_path):
+        with open(decisions_path, 'r', encoding='utf-8') as f:
             for d in json.load(f):
                 if d.get('decision') == 'skip':
-                    haiku_skipped[d['md5']] = d.get('reason', '')
+                    review_skipped[d['md5']] = d.get('reason', '')
+
+    review_log_path = os.path.join(s, 'review_apply_log.csv')
+    legacy_review_log = os.path.join(s, 'haiku_apply_log.csv')
+    if not os.path.exists(review_log_path) and os.path.exists(legacy_review_log):
+        review_log_path = legacy_review_log
+    review_errors = {
+        row['md5']: row for row in load_csv(review_log_path)
+        if row.get('status') == 'error'
+    }
 
     np_md5s = {np['md5'] for np in no_parent}
-    err_md5s = {e['md5'] for e in errors}
-
     rows = []
     for np in no_parent:
         md5 = np['md5']
@@ -92,7 +103,7 @@ def main(argv=None):
             'url_diff': np.get('url_diff') or ent.get('url_diff','') or '',
         })
 
-    for md5, hreason in haiku_skipped.items():
+    for md5, review_reason in review_skipped.items():
         if md5 in np_md5s: continue  # already covered
         ent = table.get(md5, {})
         rows.append({
@@ -100,15 +111,31 @@ def main(argv=None):
             'level': ent.get('level','') or '',
             'title': ent.get('title',''),
             'artist': ent.get('artist','') or '',
-            'category': 'haiku_skip',
-            'reason': f'Haiku: {hreason[:80]}',
+            'category': 'review_skip',
+            'reason': f'Review: {review_reason[:80]}',
+            'parent_url': ent.get('url',''),
+            'url_diff': ent.get('url_diff',''),
+        })
+
+    for md5, apply_row in review_errors.items():
+        if md5 in np_md5s or md5 in review_skipped:
+            continue
+        ent = table.get(md5, {})
+        rows.append({
+            'md5': md5,
+            'level': ent.get('level','') or '',
+            'title': ent.get('title',''),
+            'artist': ent.get('artist','') or '',
+            'category': 'review_error',
+            'reason': (apply_row.get('reason') or 'reviewed placement failed')[:120],
             'parent_url': ent.get('url',''),
             'url_diff': ent.get('url_diff',''),
         })
 
     for e in errors:
         md5 = e['md5']
-        if md5 in np_md5s: continue  # already in no_parent
+        if md5 in np_md5s or md5 in review_errors:
+            continue
         ent = table.get(md5, {})
         rows.append({
             'md5': md5,

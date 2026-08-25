@@ -1,0 +1,4 @@
+interface:
+  display_name: "BMS差分インストール"
+  short_description: "beatoraja難易度表からBMS差分と親楽曲を安全に導入・同期"
+  default_prompt: "Use $bms-diff-install to install BMS差分 from this difficulty table into my beatoraja library."

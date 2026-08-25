@@ -29,7 +29,7 @@ jobs:
 
       - name: Smoke-import all entry modules
         run: |
-          python -X utf8 -c "from scripts import install_diffs, install_parents, report, run_gui; from scripts.songdb import __main__"
+          python -X utf8 -c "from scripts import install_diffs, install_parents, prepare_review_input, apply_review, report, run_gui; from scripts.songdb import __main__"
 
       - name: Build with PyInstaller
         run: pyinstaller --clean --noconfirm bms-diff-install.spec
@@ -64,6 +64,6 @@ jobs:
 
             **前提**: 親アーカイブ展開には [7-Zip](https://www.7-zip.org/) が別途必要 (.zip のみで済むなら不要)。
 
-            詳細・制約は [README](https://github.com/nnsi/bms-diff-install-cc-skill#クイックスタート-gui-exe-windows) 参照。
+            詳細・制約は [README](https://github.com/nnsi/bms-diff-install-cc-skill#gui-exe-windows) 参照。
 
             ---

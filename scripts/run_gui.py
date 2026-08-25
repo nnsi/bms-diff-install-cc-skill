@@ -4,7 +4,7 @@ One-button GUI runner for the BMS diff installer pipeline.
 Wraps install_diffs (dry-run) -> install_parents -> install_diffs (apply) ->
 songdb (write to songdata.db) -> report into a single tkinter front-end.
 
-ambiguous / needs_haiku entries are deliberately left unplaced; they show up
+ambiguous / needs_browser entries are deliberately left unplaced; they show up
 in <state-dir>/unrecovered.md at the end.
 
 Settings persist in %USERPROFILE%/.bms-diff-install-gui.ini.
